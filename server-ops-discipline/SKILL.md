@@ -1,6 +1,6 @@
 ---
 name: server-ops-discipline
-description: "Use when preparing remote servers or GPU nodes, managing reusable runtime or data packs, materializing node-local environments, handling node IP files, launching distributed jobs, preserving idle GPUs with watchdog/bench, separating durable shared-storage state from disposable local state, or moving this workflow to another cluster."
+description: "Use when preparing remote servers or GPU nodes, building/publishing reusable conda runtime packs or data packs, materializing node-local environments, handling node IP files, launching distributed jobs, preserving idle GPUs with watchdog/bench, separating durable shared-storage state from disposable local state, or moving this workflow to another cluster."
 ---
 
 # Server Ops Discipline
@@ -94,6 +94,8 @@ When moving clusters, preserve the same roles even if the paths change.
 - Let topology or launch profiles select nodes by index from that file.
 - Do not scatter literal IPs through training configs, env configs, aux configs,
   or scripts.
+- Keep real node files local and out of git. Commit only example templates such
+  as `configs/nodes/agent_env_all.txt.example`; ignore filled `*.txt` files.
 - After resource reset, update the node file first, then prepare runtime, then
   launch jobs.
 - Prefer idempotent per-node setup commands. A repeated setup should either skip
@@ -122,6 +124,77 @@ When moving clusters, preserve the same roles even if the paths change.
   dependency changes as patch files and provide apply/check/reverse commands.
 - Materialization scripts should be explicit about what they install, copy, or
   skip; avoid hidden package installation inside launch scripts.
+
+## Env Pack Lifecycle
+
+- Build or modify conda/task environments on node-local storage such as
+  `${LOCAL_RUNTIME_DIR:-/tmp/server-ops-runtime}/envs/<name>` or another
+  documented local path. Do not run Python directly from a NAS env directory;
+  NAS envs have slow small-file IO and stale absolute prefixes.
+- Use conda-pack for reusable runtime packs that need relocation. A copied venv
+  or conda directory is not a pack; extracted conda packs must run
+  `conda-unpack` before use.
+- Publish only immutable pack artifacts to shared storage:
+  `${ROOT_DIR}/packs/<name>.tar.gz`,
+  `${ROOT_DIR}/packs/<name>.tar.gz.sha256`, and
+  `${ROOT_DIR}/packs/<name>.revision`. Archive the previous pack under
+  `${ROOT_DIR}/packs/archive/` before replacement.
+- Prefer repo-owned env build scripts for env-specific dependencies. The skill
+  owns the pack/materialize discipline; project repos own dependency lists such
+  as ALFWorld, WebShop, tau2, or custom MCP server packages.
+- Pin or record any package versions added during pack repair, then update the
+  build script. Do not leave a pack that can only be reproduced from shell
+  history.
+- Validate before publishing: run `pip check` when applicable, import critical
+  modules, and run an env-specific smoke test. For service envs, exercise the
+  real transport path when possible, such as an MCP PSM tool call.
+- After publishing, materialize with
+  `${ROOT_DIR}/scripts/prepare_node_runtime.sh --all-nodes --envs <name> ...`
+  and use `--force` when replacing an existing local env. Confirm each node's
+  `${LOCAL_ENVS_DIR}/<name>/.pack.sha256` matches the published sha.
+- Treat `conda-pack` warnings about missing package cache as non-fatal only
+  after validating a fresh unpack on another node. The extracted env must pass
+  imports and smoke tests after `conda-unpack`, which
+  `materialize_node_runtime.sh` runs automatically.
+- Keep secrets, node IP files, run logs, model weights, datasets, and editable
+  source checkouts out of env packs. Pass secrets through `${ROOT_DIR}/secrets`
+  or runtime environment variables.
+- For foundation training stacks, prefer the image runtime when it already
+  contains Slime, SGLang, Megatron, and Torch. Use a Slime conda pack only as a
+  fallback, and never point generic launchers at another local repo checkout to
+  borrow dependencies.
+
+## Known Agent Env Packs
+
+Agent environment packs use the same materialization interface. The skill
+scripts unpack by pack name; environment-specific dependency construction stays
+in the project repository that owns the adapter.
+
+Common names:
+
+```text
+alfworld    ${ROOT_DIR}/packs/alfworld.tar.gz
+webshop     ${ROOT_DIR}/packs/webshop.tar.gz
+tau2        ${ROOT_DIR}/packs/tau2.tar.gz
+appworld    ${ROOT_DIR}/packs/appworld.tar.gz
+mcp_server  ${ROOT_DIR}/packs/mcp_server.tar.gz
+```
+
+For agentic Slime, keep build scripts such as
+`scripts/utils/build_alfworld_env.sh` and
+`scripts/utils/build_webshop_env.sh` in the Slime fork, because they encode
+adapter-specific package versions and smoke tests. After publishing a pack,
+install it on nodes through the root scripts:
+
+```bash
+${ROOT_DIR}/scripts/prepare_node_runtime.sh --all-nodes --envs alfworld --data alfworld --sources none
+${ROOT_DIR}/scripts/prepare_node_runtime.sh --all-nodes --envs webshop --data webshop --sources webshop
+```
+
+Use `--force` when replacing an existing pack with a new sha. WebShop has a
+source/data layout that requires `--sources webshop --data webshop`; ALFWorld
+normally only needs the env pack and ALFWorld data because the adapter lives in
+the agentic Slime repository.
 
 ## Launch And Process Discipline
 

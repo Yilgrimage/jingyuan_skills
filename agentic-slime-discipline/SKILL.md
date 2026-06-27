@@ -1,6 +1,6 @@
 ---
 name: agentic-slime-discipline
-description: "Use when editing, reviewing, launching, or debugging the agentic Slime RL training stack: configs/agent_env profiles, examples/agent_env rollout/reward/env code, Slime CLI adapters, launch profile boundaries, reward/filter/padding logic, sync/full-async training behavior, and non-invasive integration with upstream Slime."
+description: "Use when editing, reviewing, launching, or debugging the agentic Slime RL training stack: configs/agent_env profiles, examples/agent_env rollout/reward/env code, MCP task/env configs, prompt-data alignment, Slime CLI adapters, launch profile boundaries, reward/filter/padding logic, sync/full-async training behavior, and non-invasive integration with upstream Slime."
 ---
 
 # Agentic Slime Discipline
@@ -49,9 +49,20 @@ Common hook paths:
   only. Keep algorithm, batch, token, actor/rollout, model, and aux semantics
   out of topology.
 - `configs/agent_env/aux/*.env`: auxiliary inference endpoint only.
+- `configs/nodes/*.txt`: local node files only. Commit `*.txt.example`
+  templates and ignore real IP files.
 - `examples/agent_env/<env>/env_config.yaml`: environment semantics, reward
   fields, task/data settings, parser/interaction settings, and env server
   settings.
+  Reward implementation and task-specific reward data also belong under this
+  file's `reward:` section; use `reward.impl` and `reward.judge_mode` as the
+  durable source of truth.
+
+For `mcp_server`, keep it a generic MCP environment. IPR, search, and future
+task families are selected through task-specific env configs such as
+`examples/agent_env/mcp_server/env_config_ipr_product_check.yaml`. The run
+profile selects the env config through `ENV_CONFIG`; train and launch profiles
+must not hard-code IPR/search/task-family semantics.
 
 Train profile names should be:
 
@@ -60,6 +71,27 @@ Train profile names should be:
 ```
 
 Do not include model names or aux providers in train profile names.
+
+## Launch Contract
+
+- Public launch resolves run/model/train/topology/aux profiles once and writes
+  run-local artifacts under `RUN_ROOT/logs`. Internal head/worker roles must
+  consume `resolved_launch.env` and must not re-parse git profiles.
+- Treat `resolved_train.env` as the final train adapter contract: Slime CLI
+  args, env semantics, model paths, and runtime overrides required by Ray
+  actors. The train adapter should source this one file.
+- Treat `resolved_launch.env` as launch-only state: SSH, node selectors, Ray
+  ports, env service endpoints, aux lifecycle, bench/watchdog settings, and
+  resolved run directories. Do not leak launch-only controls into train env.
+- Allow only explicit runtime overrides from profiles or documented launcher
+  inputs. Do not silently freeze arbitrary ambient shell variables into resolved
+  files.
+- Keep resolved files in run directories and out of git. They are audit
+  artifacts, not source configuration.
+- Support both image and conda-pack Slime runtimes through a small runtime
+  resolver such as `scripts/utils/slime_runtime.sh`. Do not hard-code another
+  repo's Megatron checkout, `/code/...` paths, or node-local development paths
+  into generic launch scripts.
 
 ## Change Discipline
 
@@ -75,18 +107,48 @@ Do not include model names or aux providers in train profile names.
   forward arguments. Keep wrappers only when they own validation, lifecycle,
   compatibility, metrics, retry, async, or cross-module boundary behavior.
 
+## Data Alignment
+
+- Treat prompt data as the normalized Slime index table, not as the whole raw
+  task dataset. Env-specific prompt-data builders should emit `prompt` plus
+  `metadata` keys needed to reset the exact task and score it.
+- Keep `ENV_CONFIG`, env server `--config`, Slime `--custom-config-path`, and
+  prompt-data generation on the same file. For `mcp_server`, pass the same
+  config to `prompt_data.py --config`; do not let it fall back to the mock
+  `env_config.yaml` when a task-specific config is selected.
+- Put task files, policy files, expected tools/skills, references, turn limits,
+  and task-specific reward weights in the env config or task rows. Do not put
+  those semantics in launch scripts or generic train profiles.
+- Put ROPD teacher/student/rubric data paths under `reward.ropd.*`, keyed by a
+  stable `join_key` such as `task_id`. Env vars may override for debugging, but
+  they should not be the durable experiment definition.
+- Use server-ops data materialization for physical data placement under
+  `${ROOT_DIR}/data/...`. Do not hard-code old NAS paths in agentic Slime
+  scripts or configs.
+
 ## Rollout And Reward Rules
 
 - Env wrappers own prompt rendering, parser/action semantics, backend reset/step
   calls, success/score interpretation, and env-specific metadata.
 - Generic rollout code owns message/token ledger, env HTTP lease lifecycle,
   sample shape, common dumping, and Slime data contracts.
-- Reward post-process owns final reward composition: env score, format reward,
-  truncation penalty, and optional judge reward.
-- Group RM should judge only when a judge is explicitly enabled. It should not
-  silently become a second reward combiner.
-- Dynamic sampling drops zero-variance reward groups after reward computation.
-  It does not resample individual samples.
+- The selected RM implementation owns final reward composition: env score,
+  format reward, truncation penalty, process reward, and optional judge reward.
+  Keep separate implementations for naive, Valleydance-like, ROPD-like, and
+  legacy behavior instead of mixing them in rollout post-processing.
+- Select reward implementations through env config, for example
+  `reward.impl: naive|valleydance|ropd|legacy`, with task-specific judge,
+  teacher, rubric, and weight settings under that env config's `reward:`
+  section. Aux profiles should describe endpoints only.
+- Reward post-process should only adapt already-computed RM rewards to Slime's
+  reward tensor contract, plus normalization if required by the train loop. It
+  must not append env reward or format/truncation penalties.
+- Group RM is the reward dispatch boundary. The default legacy implementation
+  may preserve old combined behavior, but new reward logic should live under
+  `examples/agent_env/rewards/`.
+- Dynamic sampling drops zero-variance reward groups after RM reward
+  computation. It does not resample individual samples; avoid custom
+  compatibility filters that recompute a separate reward path.
 - GLM-style padding is for infra-discard recovery. Discard bad samples, then pad
   from valid samples; never train on discarded samples as real data.
 
