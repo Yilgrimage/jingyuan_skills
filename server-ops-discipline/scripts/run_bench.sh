@@ -12,20 +12,18 @@ case "${ACTION}" in
 esac
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-if [ -z "${ROOT_DIR:-}" ]; then
-  if [ -n "${MLF_NAS_ROOT:-}" ]; then
-    ROOT_DIR="${MLF_NAS_ROOT}"
-  else
-    ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
-  fi
+CONFIG_FILE="${SERVER_OPS_CONFIG:-${HOME}/.jingyuan/server_ops.env}"
+if [ -z "${ROOT_DIR:-}" ] && [ -f "${CONFIG_FILE}" ]; then
+  # shellcheck disable=SC1090
+  source "${CONFIG_FILE}"
 fi
-MLF_NAS_ROOT="${MLF_NAS_ROOT:-${ROOT_DIR}}"
-LOCAL_ENVS_DIR="${LOCAL_ENVS_DIR:-${MLF_LOCAL_ENVS:-/tmp/mlf-envs}}"
+ROOT_DIR="${ROOT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd -P)}"
+LOCAL_ENVS_DIR="${LOCAL_ENVS_DIR:-/tmp/server-ops-envs}"
 
-SESSION="torch_bench"
-PY="/tmp/mlf_torch_bench.py"
-PY_PATTERN="/tmp/[m]lf_torch_bench.py"
-LOG="/tmp/mlf_torch_bench.log"
+SESSION="${RUN_BENCH_SESSION:-torch_bench}"
+PY="${RUN_BENCH_SCRIPT:-/tmp/server_ops_torch_bench.py}"
+PY_PATTERN="${RUN_BENCH_SCRIPT_PATTERN:-${PY}}"
+LOG="${RUN_BENCH_LOG:-/tmp/server_ops_torch_bench.log}"
 NODES_FILE=""
 NODE_SELECTOR=""
 SSH_USER="${SSH_USER:-$(id -un 2>/dev/null || echo tiger)}"
@@ -43,16 +41,13 @@ SSH_IPV6="${SSH_IPV6:-1}"
 REMOTE_SCRIPT="${REMOTE_SCRIPT:-${ROOT_DIR}/scripts/run_bench.sh}"
 KILL_TMUX_SERVER="${RUN_BENCH_KILL_TMUX_SERVER:-0}"
 KILL_VLLM="${RUN_BENCH_KILL_VLLM:-0}"
+READY_TIMEOUT_SECONDS="${RUN_BENCH_READY_TIMEOUT_SECONDS:-90}"
 BENCH_PYTHON_EXPLICIT=0
 if [ -n "${BENCH_PYTHON:-}" ]; then
   BENCH_PYTHON_EXPLICIT=1
 fi
 if [ -z "${BENCH_PYTHON:-}" ]; then
-  if [ -x "${LOCAL_ENVS_DIR}/slime/bin/python" ]; then
-    BENCH_PYTHON="${LOCAL_ENVS_DIR}/slime/bin/python"
-  elif [ -x "${ROOT_DIR}/envs/slime/bin/python" ]; then
-    BENCH_PYTHON="${ROOT_DIR}/envs/slime/bin/python"
-  elif command -v python3 >/dev/null 2>&1; then
+  if command -v python3 >/dev/null 2>&1; then
     BENCH_PYTHON="$(command -v python3)"
   else
     BENCH_PYTHON="python"
@@ -71,6 +66,12 @@ It never starts vLLM/SGLang. On start, each selected node replaces only the
 torch_bench keepalive session by default. Set RUN_BENCH_KILL_TMUX_SERVER=1 to
 wipe the full tmux server before starting bench. Set RUN_BENCH_KILL_VLLM=1 to
 also clean old vLLM bench/server processes.
+
+Set BENCH_PYTHON to a Python executable with torch installed when system Python
+does not provide CUDA torch.
+
+For isolated tests, override RUN_BENCH_SESSION, RUN_BENCH_SCRIPT, and
+RUN_BENCH_LOG.
 EOF
 }
 
@@ -137,7 +138,9 @@ wait_local_cleanup() {
 status_local() {
   tmux ls 2>/dev/null | grep -E "^${SESSION}:" || true
   pgrep -af "${PY_PATTERN}" || true
-  nvidia-smi || true
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi || true
+  fi
 }
 
 write_bench_worker() {
@@ -208,7 +211,7 @@ wait_bench_ready() {
   local expected ready deadline
   expected=$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')
   [ "${expected:-0}" -gt 0 ] || expected=1
-  deadline=$((SECONDS + 90))
+  deadline=$((SECONDS + READY_TIMEOUT_SECONDS))
   while [ "${SECONDS}" -lt "${deadline}" ]; do
     ready=$(grep -c '^worker ' "${LOG}" 2>/dev/null || true)
     if [ "${ready:-0}" -ge "${expected}" ]; then
@@ -219,7 +222,7 @@ wait_bench_ready() {
     fi
     sleep 2
   done
-  echo "[WARN] torch bench did not report ${expected} ready workers within 90s" >&2
+  echo "[WARN] torch bench did not report ${expected} ready workers within ${READY_TIMEOUT_SECONDS}s" >&2
   tail -n 80 "${LOG}" >&2 || true
   return 1
 }
@@ -299,8 +302,8 @@ run_one() {
   if [ "${BENCH_PYTHON_EXPLICIT}" = "1" ]; then
     bench_python_env=$(printf ' BENCH_PYTHON=%q' "${BENCH_PYTHON}")
   fi
-  cmd=$(printf 'ROOT_DIR=%q MLF_NAS_ROOT=%q LOCAL_ENVS_DIR=%q RUN_BENCH_KILL_TMUX_SERVER=%q RUN_BENCH_KILL_VLLM=%q%s bash %q %q' \
-    "${ROOT_DIR}" "${MLF_NAS_ROOT}" "${LOCAL_ENVS_DIR}" "${KILL_TMUX_SERVER}" "${KILL_VLLM}" "${bench_python_env}" "${REMOTE_SCRIPT}" "${ACTION}")
+  cmd=$(printf 'ROOT_DIR=%q LOCAL_ENVS_DIR=%q RUN_BENCH_SESSION=%q RUN_BENCH_SCRIPT=%q RUN_BENCH_SCRIPT_PATTERN=%q RUN_BENCH_LOG=%q RUN_BENCH_READY_TIMEOUT_SECONDS=%q RUN_BENCH_KILL_TMUX_SERVER=%q RUN_BENCH_KILL_VLLM=%q%s bash %q %q' \
+    "${ROOT_DIR}" "${LOCAL_ENVS_DIR}" "${SESSION}" "${PY}" "${PY_PATTERN}" "${LOG}" "${READY_TIMEOUT_SECONDS}" "${KILL_TMUX_SERVER}" "${KILL_VLLM}" "${bench_python_env}" "${REMOTE_SCRIPT}" "${ACTION}")
   if is_current_node "${node}"; then
     run_local
   else
@@ -326,7 +329,7 @@ if [ -z "${NODES_FILE}" ]; then
   exit 0
 fi
 
-tmpdir=$(mktemp -d /tmp/mlf_torch_bench_control.XXXXXX)
+tmpdir=$(mktemp -d /tmp/server_ops_torch_bench_control.XXXXXX)
 trap 'rm -rf "${tmpdir}"' EXIT
 
 ssh_run() {

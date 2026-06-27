@@ -2,24 +2,20 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-if [ -z "${ROOT_DIR:-}" ]; then
-  if [ -n "${MLF_NAS_ROOT:-}" ]; then
-    ROOT_DIR="${MLF_NAS_ROOT}"
-  else
-    ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
-  fi
+CONFIG_FILE="${SERVER_OPS_CONFIG:-${HOME}/.jingyuan/server_ops.env}"
+if [ -z "${ROOT_DIR:-}" ] && [ -f "${CONFIG_FILE}" ]; then
+  # shellcheck disable=SC1090
+  source "${CONFIG_FILE}"
 fi
-MLF_NAS_ROOT=${MLF_NAS_ROOT:-${ROOT_DIR}}
-LOCAL_ENVS_DIR=${LOCAL_ENVS_DIR:-${MLF_LOCAL_ENVS:-/tmp/mlf-envs}}
-LOCAL_ROOT=${LOCAL_ROOT:-${MLF_LOCAL_ROOT:-/tmp/mlf-runtime}}
-MLF_LOCAL_ENVS=${MLF_LOCAL_ENVS:-${LOCAL_ENVS_DIR}}
-MLF_LOCAL_ROOT=${MLF_LOCAL_ROOT:-${LOCAL_ROOT}}
+ROOT_DIR="${ROOT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd -P)}"
+LOCAL_ENVS_DIR="${LOCAL_ENVS_DIR:-/tmp/server-ops-envs}"
+LOCAL_RUNTIME_DIR="${LOCAL_RUNTIME_DIR:-/tmp/server-ops-runtime}"
 PACK_DIR=${PACK_DIR:-${ROOT_DIR}/packs}
 
-ENVS=${ENVS:-slime,alfworld,webshop}
-DATASETS=${DATASETS:-alfworld,webshop}
+ENVS=${ENVS:-none}
+DATASETS=${DATASETS:-none}
 MODELS=${MODELS:-none}
-SOURCES=${SOURCES:-webshop}
+SOURCES=${SOURCES:-none}
 FORCE=0
 CHECK_HASH=1
 SKIP_ENVS=0
@@ -32,13 +28,14 @@ usage() {
 Usage: materialize_node_runtime.sh [options]
 
 Materialize conda packs, data packs, and source mirrors on the current node.
-Models are intentionally read from NAS and are not copied to node-local disk.
+Models are intentionally read from shared storage and are not copied to node-local disk.
+Nothing environment-specific is materialized unless explicitly selected.
 
 Options:
-  --envs LIST        Comma list: slime,alfworld,webshop,tau2,appworld,none
-  --data LIST        Comma list: alfworld,webshop,tau2,appworld,none
+  --envs LIST        Comma list of environment pack names, or none
+  --data LIST        Comma list of dataset names, or none
   --models none      Kept for compatibility. Model copying is disabled.
-  --sources LIST     Comma list: webshop,tau2,appworld,none
+  --sources LIST     Comma list of source checkout names, or none
   --force            Reinstall/copy even if local stamp matches
   --no-check-hash    Use existence checks only
   --skip-envs
@@ -66,10 +63,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-mkdir -p "${MLF_LOCAL_ENVS}" "${MLF_LOCAL_ROOT}"
+mkdir -p "${LOCAL_ENVS_DIR}" "${LOCAL_RUNTIME_DIR}"
 
 if [ "${MODELS}" != "none" ]; then
-  echo "Model materialization is disabled. Use --models none and read model checkpoints from ${MLF_NAS_ROOT}/models." >&2
+  echo "Model materialization is disabled. Use --models none and read model checkpoints from ${ROOT_DIR}/models." >&2
   exit 2
 fi
 
@@ -81,6 +78,12 @@ contains_item() {
     *",${item},"*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+list_items() {
+  local list=$1
+  [ "${list}" != "none" ] || return 0
+  printf '%s\n' "${list}" | tr ',' '\n' | awk 'NF {print $1}'
 }
 
 sha_file_value() {
@@ -116,7 +119,7 @@ materialize_pack() {
   local name=$1
   local pack="${PACK_DIR}/${name}.tar.gz"
   local sha_file="${pack}.sha256"
-  local target="${MLF_LOCAL_ENVS}/${name}"
+  local target="${LOCAL_ENVS_DIR}/${name}"
   local stamp="${target}/.pack.sha256"
   if [ ! -f "${pack}" ]; then
     echo "Missing pack: ${pack}" >&2
@@ -159,12 +162,12 @@ copy_dir_once_excluding_data() {
 
 materialize_data() {
   local name=$1
-  local src_dir="${MLF_NAS_ROOT}/data/${name}"
+  local src_dir="${ROOT_DIR}/data/${name}"
   local pack="${PACK_DIR}/${name}-data.tar.gz"
   local sha_file="${pack}.sha256"
-  local dst="${MLF_LOCAL_ROOT}/data/${name}"
+  local dst="${LOCAL_RUNTIME_DIR}/data/${name}"
   local stamp="${dst}/.data-pack.sha256"
-  mkdir -p "${MLF_LOCAL_ROOT}/data"
+  mkdir -p "${LOCAL_RUNTIME_DIR}/data"
   if [ "${FORCE}" -eq 0 ] && [ -d "${dst}" ]; then
     if [ "${CHECK_HASH}" -eq 0 ] || stamp_matches "${stamp}" "${sha_file}" || { [ -d "${src_dir}" ] && [ ! -f "${sha_file}" ]; }; then
       echo "${name}_DATA=${dst} (cached)"
@@ -174,7 +177,7 @@ materialize_data() {
   rm -rf "${dst}"
   if [ -f "${pack}" ]; then
     echo "Materializing data pack ${name} -> ${dst}"
-    tar -xzf "${pack}" -C "${MLF_LOCAL_ROOT}/data"
+    tar -xzf "${pack}" -C "${LOCAL_RUNTIME_DIR}/data"
     write_stamp "${stamp}" "${sha_file}"
   elif [ -d "${src_dir}" ]; then
     echo "Copying data directory ${name} -> ${dst}"
@@ -187,62 +190,69 @@ materialize_data() {
 }
 
 mirror_webshop_runtime_data() {
-  if [ ! -d "${MLF_LOCAL_ROOT}/data/webshop" ] || [ ! -d "${MLF_LOCAL_ROOT}/code/WebShop" ]; then
+  if [ ! -d "${LOCAL_RUNTIME_DIR}/data/webshop" ] || [ ! -d "${LOCAL_RUNTIME_DIR}/code/WebShop" ]; then
     return
   fi
-  if [ -d "${MLF_LOCAL_ROOT}/data/webshop/data" ]; then
-    copy_tree_excluding_parts "${MLF_LOCAL_ROOT}/data/webshop/data" "${MLF_LOCAL_ROOT}/code/WebShop/data"
+  if [ -d "${LOCAL_RUNTIME_DIR}/data/webshop/data" ]; then
+    copy_tree_excluding_parts "${LOCAL_RUNTIME_DIR}/data/webshop/data" "${LOCAL_RUNTIME_DIR}/code/WebShop/data"
   fi
-  if [ -d "${MLF_LOCAL_ROOT}/data/webshop/search_engine/indexes_1k" ]; then
-    mkdir -p "${MLF_LOCAL_ROOT}/code/WebShop/search_engine"
-    rm -rf "${MLF_LOCAL_ROOT}/code/WebShop/search_engine/indexes_1k"
-    cp -a "${MLF_LOCAL_ROOT}/data/webshop/search_engine/indexes_1k" "${MLF_LOCAL_ROOT}/code/WebShop/search_engine/indexes_1k"
+  if [ -d "${LOCAL_RUNTIME_DIR}/data/webshop/search_engine/indexes_1k" ]; then
+    mkdir -p "${LOCAL_RUNTIME_DIR}/code/WebShop/search_engine"
+    rm -rf "${LOCAL_RUNTIME_DIR}/code/WebShop/search_engine/indexes_1k"
+    cp -a "${LOCAL_RUNTIME_DIR}/data/webshop/search_engine/indexes_1k" "${LOCAL_RUNTIME_DIR}/code/WebShop/search_engine/indexes_1k"
   fi
-  if [ -d "${MLF_LOCAL_ROOT}/data/webshop/search_engine/indexes_100k" ]; then
-    mkdir -p "${MLF_LOCAL_ROOT}/code/WebShop/search_engine"
-    rm -rf "${MLF_LOCAL_ROOT}/code/WebShop/search_engine/indexes_100k"
-    cp -a "${MLF_LOCAL_ROOT}/data/webshop/search_engine/indexes_100k" "${MLF_LOCAL_ROOT}/code/WebShop/search_engine/indexes_100k"
+  if [ -d "${LOCAL_RUNTIME_DIR}/data/webshop/search_engine/indexes_100k" ]; then
+    mkdir -p "${LOCAL_RUNTIME_DIR}/code/WebShop/search_engine"
+    rm -rf "${LOCAL_RUNTIME_DIR}/code/WebShop/search_engine/indexes_100k"
+    cp -a "${LOCAL_RUNTIME_DIR}/data/webshop/search_engine/indexes_100k" "${LOCAL_RUNTIME_DIR}/code/WebShop/search_engine/indexes_100k"
   fi
 }
 
+source_dst() {
+  local name=$1
+  case "${name}" in
+    webshop) printf '%s\n' "${LOCAL_RUNTIME_DIR}/code/WebShop" ;;
+    tau2) printf '%s\n' "${LOCAL_RUNTIME_DIR}/code/tau2-bench" ;;
+    *) printf '%s\n' "${LOCAL_RUNTIME_DIR}/code/${name}" ;;
+  esac
+}
+
+materialize_source() {
+  local name=$1
+  case "${name}" in
+    webshop)
+      copy_dir_once "${ROOT_DIR}/code/WebShop" "$(source_dst "${name}")"
+      ;;
+    tau2)
+      copy_dir_once_excluding_data "${ROOT_DIR}/code/tau2-bench" "$(source_dst "${name}")"
+      ;;
+    *)
+      copy_dir_once "${ROOT_DIR}/code/${name}" "$(source_dst "${name}")"
+      ;;
+  esac
+}
+
 if [ "${SKIP_ENVS}" -eq 0 ]; then
-  for env_name in slime alfworld webshop tau2 appworld; do
-    if contains_item "${ENVS}" "${env_name}"; then
-      materialize_pack "${env_name}"
-    fi
+  for env_name in $(list_items "${ENVS}"); do
+    materialize_pack "${env_name}"
   done
 fi
 
 if [ "${SKIP_SOURCES}" -eq 0 ]; then
-  if contains_item "${SOURCES}" "webshop"; then
-    copy_dir_once "${MLF_NAS_ROOT}/code/WebShop" "${MLF_LOCAL_ROOT}/code/WebShop"
-  fi
-  if contains_item "${SOURCES}" "tau2"; then
-    copy_dir_once_excluding_data "${MLF_NAS_ROOT}/code/tau2-bench" "${MLF_LOCAL_ROOT}/code/tau2-bench"
-  fi
-  if contains_item "${SOURCES}" "appworld"; then
-    copy_dir_once "${MLF_NAS_ROOT}/code/appworld" "${MLF_LOCAL_ROOT}/code/appworld"
-  fi
+  for source_name in $(list_items "${SOURCES}"); do
+    materialize_source "${source_name}"
+  done
 fi
 
 if [ "${SKIP_DATA}" -eq 0 ]; then
-  for data_name in alfworld webshop tau2 appworld; do
-    if contains_item "${DATASETS}" "${data_name}"; then
-      materialize_data "${data_name}"
-    fi
+  for data_name in $(list_items "${DATASETS}"); do
+    materialize_data "${data_name}"
   done
   if contains_item "${DATASETS}" "webshop"; then
     mirror_webshop_runtime_data
   fi
 fi
 
-echo "MLF_LOCAL_ENVS=${MLF_LOCAL_ENVS}"
-echo "MLF_LOCAL_ROOT=${MLF_LOCAL_ROOT}"
-echo "MODEL_ROOT=${MLF_NAS_ROOT}/models"
-echo "ALFWORLD_DATA=${MLF_LOCAL_ROOT}/data/alfworld"
-echo "WEBSHOP_DATA=${MLF_LOCAL_ROOT}/data/webshop"
-echo "WEBSHOP_LIB=${MLF_LOCAL_ROOT}/code/WebShop"
-echo "TAU2_LIB=${MLF_LOCAL_ROOT}/code/tau2-bench"
-echo "TAU2_DATA_DIR=${MLF_LOCAL_ROOT}/data/tau2/data"
-echo "APPWORLD_ROOT=${MLF_LOCAL_ROOT}/data/appworld"
-echo "APPWORLD_LIB=${MLF_LOCAL_ROOT}/code/appworld"
+echo "LOCAL_ENVS_DIR=${LOCAL_ENVS_DIR}"
+echo "LOCAL_RUNTIME_DIR=${LOCAL_RUNTIME_DIR}"
+echo "MODEL_ROOT=${ROOT_DIR}/models"

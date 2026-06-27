@@ -2,27 +2,23 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-if [ -z "${ROOT_DIR:-}" ]; then
-  if [ -n "${MLF_NAS_ROOT:-}" ]; then
-    ROOT_DIR="${MLF_NAS_ROOT}"
-  else
-    ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
-  fi
+CONFIG_FILE="${SERVER_OPS_CONFIG:-${HOME}/.jingyuan/server_ops.env}"
+if [ -z "${ROOT_DIR:-}" ] && [ -f "${CONFIG_FILE}" ]; then
+  # shellcheck disable=SC1090
+  source "${CONFIG_FILE}"
 fi
-MLF_NAS_ROOT=${MLF_NAS_ROOT:-${ROOT_DIR}}
-LOCAL_ENVS_DIR=${LOCAL_ENVS_DIR:-${MLF_LOCAL_ENVS:-/tmp/mlf-envs}}
-LOCAL_ROOT=${LOCAL_ROOT:-${MLF_LOCAL_ROOT:-/tmp/mlf-runtime}}
-MLF_LOCAL_ENVS=${MLF_LOCAL_ENVS:-${LOCAL_ENVS_DIR}}
-MLF_LOCAL_ROOT=${MLF_LOCAL_ROOT:-${LOCAL_ROOT}}
+ROOT_DIR="${ROOT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd -P)}"
+LOCAL_ENVS_DIR="${LOCAL_ENVS_DIR:-/tmp/server-ops-envs}"
+LOCAL_RUNTIME_DIR="${LOCAL_RUNTIME_DIR:-/tmp/server-ops-runtime}"
 NODES_FILE=""
 NODE_SELECTOR=""
 LOCAL_ONLY=1
 ALL_NODES=0
 ORCHESTRATOR=${ORCHESTRATOR:-head}
-ENVS=${ENVS:-slime,alfworld,webshop}
-DATASETS=${DATASETS:-alfworld,webshop}
+ENVS=${ENVS:-none}
+DATASETS=${DATASETS:-none}
 MODELS=${MODELS:-none}
-SOURCES=${SOURCES:-webshop}
+SOURCES=${SOURCES:-none}
 FORCE=0
 CHECK_HASH=1
 DRY_RUN=0
@@ -50,6 +46,7 @@ Usage: prepare_node_runtime.sh [options]
 
 Prepare local or multi-node runtime assets. This script does not start Ray,
 env servers, or training.
+Nothing environment-specific is materialized unless explicitly selected.
 
 Options:
   --local-only         Prepare only the current node (default)
@@ -57,10 +54,10 @@ Options:
   --orchestrator MODE  head or local. head submits one tmux on node0; local SSHes to every node.
   --nodes FILE        Node list, one host/IP per line; comments allowed
   --node INDEXES      Comma-separated zero-based node indexes from --nodes
-  --envs LIST         Comma list: slime,alfworld,webshop,tau2,appworld,none
-  --data LIST         Comma list: alfworld,webshop,tau2,appworld,none
-  --models none       Kept for compatibility. Model copying is disabled; training reads models from NAS.
-  --sources LIST      Comma list: webshop,tau2,appworld,none
+  --envs LIST         Comma list of environment pack names, or none
+  --data LIST         Comma list of dataset names, or none
+  --models none       Kept for compatibility. Model copying is disabled; training reads models from shared storage.
+  --sources LIST      Comma list of source checkout names, or none
   --force             Reinstall/copy even if local stamp matches
   --no-check-hash     Use existence checks only
   --dry-run           Print actions only
@@ -107,13 +104,13 @@ fi
 
 run_local() {
   if [ "${DRY_RUN}" -eq 1 ]; then
-    printf '+ ROOT_DIR=%q LOCAL_ENVS_DIR=%q LOCAL_ROOT=%q bash %q ' \
-      "${ROOT_DIR}" "${LOCAL_ENVS_DIR}" "${LOCAL_ROOT}" "${ROOT_DIR}/scripts/materialize_node_runtime.sh"
+    printf '+ ROOT_DIR=%q LOCAL_ENVS_DIR=%q LOCAL_RUNTIME_DIR=%q bash %q ' \
+      "${ROOT_DIR}" "${LOCAL_ENVS_DIR}" "${LOCAL_RUNTIME_DIR}" "${ROOT_DIR}/scripts/materialize_node_runtime.sh"
     printf '%q ' "${materialize_args[@]}"
     printf '\n'
     return
   fi
-  ROOT_DIR="${ROOT_DIR}" LOCAL_ENVS_DIR="${LOCAL_ENVS_DIR}" LOCAL_ROOT="${LOCAL_ROOT}" \
+  ROOT_DIR="${ROOT_DIR}" LOCAL_ENVS_DIR="${LOCAL_ENVS_DIR}" LOCAL_RUNTIME_DIR="${LOCAL_RUNTIME_DIR}" \
     bash "${ROOT_DIR}/scripts/materialize_node_runtime.sh" "${materialize_args[@]}"
 }
 
@@ -186,8 +183,8 @@ run_remote() {
   local host=$1
   local remote_cmd
   remote_cmd=$(
-    printf 'ROOT_DIR=%q MLF_NAS_ROOT=%q LOCAL_ENVS_DIR=%q LOCAL_ROOT=%q bash %q ' \
-      "${ROOT_DIR}" "${MLF_NAS_ROOT}" "${LOCAL_ENVS_DIR}" "${LOCAL_ROOT}" "${ROOT_DIR}/scripts/materialize_node_runtime.sh"
+    printf 'ROOT_DIR=%q LOCAL_ENVS_DIR=%q LOCAL_RUNTIME_DIR=%q bash %q ' \
+      "${ROOT_DIR}" "${LOCAL_ENVS_DIR}" "${LOCAL_RUNTIME_DIR}" "${ROOT_DIR}/scripts/materialize_node_runtime.sh"
     printf '%q ' "${materialize_args[@]}"
   )
   echo "Preparing ${host}"
@@ -202,8 +199,8 @@ run_remote() {
 }
 
 remote_prepare_command() {
-  printf 'ROOT_DIR=%q MLF_NAS_ROOT=%q LOCAL_ENVS_DIR=%q LOCAL_ROOT=%q bash %q ' \
-    "${ROOT_DIR}" "${MLF_NAS_ROOT}" "${LOCAL_ENVS_DIR}" "${LOCAL_ROOT}" "${ROOT_DIR}/scripts/materialize_node_runtime.sh"
+  printf 'ROOT_DIR=%q LOCAL_ENVS_DIR=%q LOCAL_RUNTIME_DIR=%q bash %q ' \
+    "${ROOT_DIR}" "${LOCAL_ENVS_DIR}" "${LOCAL_RUNTIME_DIR}" "${ROOT_DIR}/scripts/materialize_node_runtime.sh"
   printf '%q ' "${materialize_args[@]}"
 }
 
@@ -212,7 +209,7 @@ start_remote_prepare() {
   local materialize_cmd
   local remote_cmd
   materialize_cmd=$(remote_prepare_command)
-  remote_cmd=$(printf 'rm -f /tmp/mlf_prepare.exit; tmux kill-session -t mlf_node_prepare 2>/dev/null || true; tmux new-session -d -s mlf_node_prepare %q; tmux ls 2>/dev/null | grep mlf_node_prepare' "bash -lc '${materialize_cmd} > /tmp/mlf_prepare.log 2>&1; echo \$? > /tmp/mlf_prepare.exit'")
+  remote_cmd=$(printf 'rm -f /tmp/server_ops_prepare.exit; tmux kill-session -t server_ops_node_prepare 2>/dev/null || true; tmux new-session -d -s server_ops_node_prepare %q; tmux ls 2>/dev/null | grep server_ops_node_prepare' "bash -lc '${materialize_cmd} > /tmp/server_ops_prepare.log 2>&1; echo \$? > /tmp/server_ops_prepare.exit'")
   echo "Submitting prepare ${host}"
   if is_current_node "${host}"; then
     if [ "${DRY_RUN}" -eq 1 ]; then
@@ -235,7 +232,7 @@ start_remote_prepare() {
 remote_prepare_status() {
   local host=$1
   local remote_cmd
-  remote_cmd='if tmux has-session -t mlf_node_prepare 2>/dev/null; then echo RUNNING; elif [ -f /tmp/mlf_prepare.exit ]; then code=$(cat /tmp/mlf_prepare.exit); echo EXIT:${code}; tail -n 8 /tmp/mlf_prepare.log 2>/dev/null || true; else echo MISSING; tail -n 8 /tmp/mlf_prepare.log 2>/dev/null || true; fi'
+  remote_cmd='if tmux has-session -t server_ops_node_prepare 2>/dev/null; then echo RUNNING; elif [ -f /tmp/server_ops_prepare.exit ]; then code=$(cat /tmp/server_ops_prepare.exit); echo EXIT:${code}; tail -n 8 /tmp/server_ops_prepare.log 2>/dev/null || true; else echo MISSING; tail -n 8 /tmp/server_ops_prepare.log 2>/dev/null || true; fi'
   if is_current_node "${host}"; then
     bash -lc "${remote_cmd}"
     return
@@ -312,15 +309,15 @@ submit_head_prepare() {
   local head=$1
   local remote_cmd
   remote_cmd=$(
-    printf 'ROOT_DIR=%q MLF_NAS_ROOT=%q LOCAL_ENVS_DIR=%q LOCAL_ROOT=%q SSH_JUMP= SSH_KEY=%q SSH_IPV6=1 bash %q ' \
-      "${ROOT_DIR}" "${MLF_NAS_ROOT}" "${LOCAL_ENVS_DIR}" "${LOCAL_ROOT}" "${SSH_KEY}" "${ROOT_DIR}/scripts/prepare_node_runtime.sh"
+    printf 'ROOT_DIR=%q LOCAL_ENVS_DIR=%q LOCAL_RUNTIME_DIR=%q SSH_JUMP= SSH_KEY=%q SSH_IPV6=1 bash %q ' \
+      "${ROOT_DIR}" "${LOCAL_ENVS_DIR}" "${LOCAL_RUNTIME_DIR}" "${SSH_KEY}" "${ROOT_DIR}/scripts/prepare_node_runtime.sh"
     printf '%q ' --all-nodes --orchestrator local --nodes "${NODES_FILE}" --envs "${ENVS}" --data "${DATASETS}" --models "${MODELS}" --sources "${SOURCES}"
     [ -z "${NODE_SELECTOR}" ] || printf '%q ' --node "${NODE_SELECTOR}"
     [ "${FORCE}" -eq 0 ] || printf '%q ' --force
     [ "${CHECK_HASH}" -eq 1 ] || printf '%q ' --no-check-hash
   )
   local wrapped
-  wrapped=$(printf 'rm -f /tmp/mlf_prepare_head.exit; tmux kill-session -t mlf_prepare_head 2>/dev/null || true; tmux new-session -d -s mlf_prepare_head %q; tmux ls 2>/dev/null | grep mlf_prepare_head' "bash -lc '${remote_cmd} > /tmp/mlf_prepare_head.log 2>&1; echo \$? > /tmp/mlf_prepare_head.exit'")
+  wrapped=$(printf 'rm -f /tmp/server_ops_prepare_head.exit; tmux kill-session -t server_ops_prepare_head 2>/dev/null || true; tmux new-session -d -s server_ops_prepare_head %q; tmux ls 2>/dev/null | grep server_ops_prepare_head' "bash -lc '${remote_cmd} > /tmp/server_ops_prepare_head.log 2>&1; echo \$? > /tmp/server_ops_prepare_head.exit'")
   echo "Submitting head prepare ${head}"
   fill_ssh_args "${head}"
   if [ "${DRY_RUN}" -eq 1 ]; then
@@ -331,7 +328,7 @@ submit_head_prepare() {
   fi
   ssh "${SSH_ARGS[@]}" "${wrapped}"
   echo "Head prepare submitted."
-  echo "Head log: ${head}:/tmp/mlf_prepare_head.log"
+  echo "Head log: ${head}:/tmp/server_ops_prepare_head.log"
 }
 
 if [ "${LOCAL_ONLY}" -eq 1 ]; then

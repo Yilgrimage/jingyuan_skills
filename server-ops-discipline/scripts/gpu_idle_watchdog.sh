@@ -5,20 +5,19 @@ ACTION="${1:-start}"
 
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname -- "${SCRIPT_PATH}")"
-if [ -z "${ROOT_DIR:-}" ]; then
-  if [ -n "${MLF_NAS_ROOT:-}" ]; then
-    ROOT_DIR="${MLF_NAS_ROOT}"
-  else
-    ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
-  fi
+CONFIG_FILE="${SERVER_OPS_CONFIG:-${HOME}/.jingyuan/server_ops.env}"
+if [ -z "${ROOT_DIR:-}" ] && [ -f "${CONFIG_FILE}" ]; then
+  # shellcheck disable=SC1090
+  source "${CONFIG_FILE}"
 fi
-MLF_NAS_ROOT="${MLF_NAS_ROOT:-${ROOT_DIR}}"
+ROOT_DIR="${ROOT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd -P)}"
+LOCAL_ENVS_DIR="${LOCAL_ENVS_DIR:-/tmp/server-ops-envs}"
 RUN_BENCH="${RUN_BENCH:-${ROOT_DIR}/scripts/run_bench.sh}"
 SESSION_NAME="${GPU_IDLE_WATCHDOG_SESSION:-gpu_idle_watchdog}"
-PID_FILE="${GPU_IDLE_WATCHDOG_PID_FILE:-/tmp/mlf_gpu_idle_watchdog.pid}"
+PID_FILE="${GPU_IDLE_WATCHDOG_PID_FILE:-/tmp/server_ops_gpu_idle_watchdog.pid}"
 HOST_LABEL="$(hostname 2>/dev/null | tr -c 'A-Za-z0-9_.-' '_' || true)"
 HOST_LABEL="${HOST_LABEL:-unknown}"
-LOG_FILE="${GPU_IDLE_WATCHDOG_LOG:-/tmp/mlf_gpu_idle_watchdog_${HOST_LABEL}.log}"
+LOG_FILE="${GPU_IDLE_WATCHDOG_LOG:-/tmp/server_ops_gpu_idle_watchdog_${HOST_LABEL}.log}"
 INTERVAL_SECONDS="${GPU_IDLE_WATCHDOG_INTERVAL_SECONDS:-10}"
 IDLE_WINDOW_SECONDS="${GPU_IDLE_WATCHDOG_IDLE_WINDOW_SECONDS:-1800}"
 IDLE_UTIL_THRESHOLD="${GPU_IDLE_WATCHDOG_IDLE_UTIL_THRESHOLD:-5}"
@@ -39,7 +38,9 @@ Environment:
   GPU_IDLE_WATCHDOG_INTERVAL_SECONDS     default 10
   GPU_IDLE_WATCHDOG_IDLE_WINDOW_SECONDS  default 1800
   GPU_IDLE_WATCHDOG_IDLE_UTIL_THRESHOLD  default 5
-  GPU_IDLE_WATCHDOG_LOG                  default /tmp/mlf_gpu_idle_watchdog_$HOSTNAME.log
+  GPU_IDLE_WATCHDOG_LOG                  default /tmp/server_ops_gpu_idle_watchdog_$HOSTNAME.log
+  BENCH_PYTHON                           optional Python executable passed to run_bench
+  LOCAL_ENVS_DIR                         default /tmp/server-ops-envs, passed to run_bench
 EOF
 }
 
@@ -156,8 +157,8 @@ start_watchdog() {
   rm -f "${PID_FILE}"
   mkdir -p "$(dirname "${LOG_FILE}")"
   local cmd
-  cmd=$(printf 'ROOT_DIR=%q MLF_NAS_ROOT=%q RUN_BENCH=%q GPU_IDLE_WATCHDOG_SESSION=%q GPU_IDLE_WATCHDOG_PID_FILE=%q GPU_IDLE_WATCHDOG_LOG=%q GPU_IDLE_WATCHDOG_INTERVAL_SECONDS=%q GPU_IDLE_WATCHDOG_IDLE_WINDOW_SECONDS=%q GPU_IDLE_WATCHDOG_IDLE_UTIL_THRESHOLD=%q bash %q run >> %q 2>&1' \
-    "${ROOT_DIR}" "${MLF_NAS_ROOT}" "${RUN_BENCH}" "${SESSION_NAME}" "${PID_FILE}" "${LOG_FILE}" \
+  cmd=$(printf 'ROOT_DIR=%q LOCAL_ENVS_DIR=%q BENCH_PYTHON=%q RUN_BENCH=%q GPU_IDLE_WATCHDOG_SESSION=%q GPU_IDLE_WATCHDOG_PID_FILE=%q GPU_IDLE_WATCHDOG_LOG=%q GPU_IDLE_WATCHDOG_INTERVAL_SECONDS=%q GPU_IDLE_WATCHDOG_IDLE_WINDOW_SECONDS=%q GPU_IDLE_WATCHDOG_IDLE_UTIL_THRESHOLD=%q bash %q run >> %q 2>&1' \
+    "${ROOT_DIR}" "${LOCAL_ENVS_DIR}" "${BENCH_PYTHON:-}" "${RUN_BENCH}" "${SESSION_NAME}" "${PID_FILE}" "${LOG_FILE}" \
     "${INTERVAL_SECONDS}" "${IDLE_WINDOW_SECONDS}" "${IDLE_UTIL_THRESHOLD}" "${SCRIPT_PATH}" "${LOG_FILE}")
   tmux new-session -d -s "${SESSION_NAME}" "${cmd}"
   local deadline
