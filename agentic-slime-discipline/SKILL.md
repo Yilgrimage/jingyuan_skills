@@ -149,6 +149,12 @@ Do not include model names or aux providers in train profile names.
 - Dynamic sampling drops zero-variance reward groups after RM reward
   computation. It does not resample individual samples; avoid custom
   compatibility filters that recompute a separate reward path.
+- If `examples.agent_env.rollout.glm_style_pad_groups_filter` is enabled as a
+  rollout sample filter, also enable a dynamic filter that drops groups with
+  too few valid samples, for example
+  `examples.agent_env.reward_post_process.check_reward_nonzero_std`. The sample
+  filter repairs kept groups; it must not be the first layer that sees a bad
+  group.
 - GLM-style padding is for infra-discard recovery. Discard bad samples, then pad
   from valid samples; never train on discarded samples as real data.
 
