@@ -19,6 +19,9 @@ ENVS=${ENVS:-none}
 DATASETS=${DATASETS:-none}
 MODELS=${MODELS:-none}
 SOURCES=${SOURCES:-none}
+AUTO_DOWNLOAD_DATASETS=${AUTO_DOWNLOAD_DATASETS:-0}
+VALIDATE_DATA=${VALIDATE_DATA:-1}
+VALIDATE_DATA_LOAD=${VALIDATE_DATA_LOAD:-0}
 FORCE=0
 CHECK_HASH=1
 DRY_RUN=0
@@ -58,6 +61,12 @@ Options:
   --data LIST         Comma list of dataset names, or none
   --models none       Kept for compatibility. Model copying is disabled; training reads models from shared storage.
   --sources LIST      Comma list of source checkout names, or none
+  --auto-download-data
+                      Download supported datasets into ROOT_DIR/data when no
+                      local source or data pack exists
+  --no-validate-data  Skip dataset layout validation after materialization
+  --validate-data-load
+                      Run supported env load smoke tests after materialization
   --force             Reinstall/copy even if local stamp matches
   --no-check-hash     Use existence checks only
   --dry-run           Print actions only
@@ -80,6 +89,9 @@ while [ $# -gt 0 ]; do
     --data) DATASETS=$2; shift 2 ;;
     --models) MODELS=$2; shift 2 ;;
     --sources) SOURCES=$2; shift 2 ;;
+    --auto-download-data) AUTO_DOWNLOAD_DATASETS=1; shift ;;
+    --no-validate-data) VALIDATE_DATA=0; shift ;;
+    --validate-data-load) VALIDATE_DATA_LOAD=1; shift ;;
     --force) FORCE=1; shift ;;
     --no-check-hash) CHECK_HASH=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -96,6 +108,9 @@ materialize_args=(
 )
 [ "${FORCE}" -eq 0 ] || materialize_args+=(--force)
 [ "${CHECK_HASH}" -eq 1 ] || materialize_args+=(--no-check-hash)
+[ "${AUTO_DOWNLOAD_DATASETS}" = "0" ] || materialize_args+=(--auto-download-data)
+[ "${VALIDATE_DATA}" = "1" ] || materialize_args+=(--no-validate-data)
+[ "${VALIDATE_DATA_LOAD}" = "0" ] || materialize_args+=(--validate-data-load)
 
 if [ "${MODELS}" != "none" ]; then
   echo "Model materialization is disabled. Use --models none and read model checkpoints from ${ROOT_DIR}/models." >&2
@@ -315,6 +330,9 @@ submit_head_prepare() {
     [ -z "${NODE_SELECTOR}" ] || printf '%q ' --node "${NODE_SELECTOR}"
     [ "${FORCE}" -eq 0 ] || printf '%q ' --force
     [ "${CHECK_HASH}" -eq 1 ] || printf '%q ' --no-check-hash
+    [ "${AUTO_DOWNLOAD_DATASETS}" = "0" ] || printf '%q ' --auto-download-data
+    [ "${VALIDATE_DATA}" = "1" ] || printf '%q ' --no-validate-data
+    [ "${VALIDATE_DATA_LOAD}" = "0" ] || printf '%q ' --validate-data-load
   )
   local wrapped
   wrapped=$(printf 'rm -f /tmp/server_ops_prepare_head.exit; tmux kill-session -t server_ops_prepare_head 2>/dev/null || true; tmux new-session -d -s server_ops_prepare_head %q; tmux ls 2>/dev/null | grep server_ops_prepare_head' "bash -lc '${remote_cmd} > /tmp/server_ops_prepare_head.log 2>&1; echo \$? > /tmp/server_ops_prepare_head.exit'")

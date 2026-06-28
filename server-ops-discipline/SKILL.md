@@ -76,6 +76,15 @@ ${LOCAL_RUNTIME_DIR:-/tmp/server-ops-runtime}
   training. It is part of the Slime runtime, not a separate runtime component.
 - Keep task envs separate: ALFWorld, WebShop, tau2, AppWorld, MCP servers, and
   other env dependencies get their own packs.
+- Keep task data separate from env packs. Data may be provided as
+  `${ROOT_DIR}/data/<name>`, `${ROOT_DIR}/packs/<name>-data.tar.gz`, or by a
+  supported downloader during `prepare_node_runtime.sh --data <name>
+  --auto-download-data`.
+- Validate task data after materialization. Domain-specific datasets should
+  fail fast on missing required files; for example ALFWorld needs paired
+  `game.tw-pddl`/`traj_data.json` files plus `logic/alfred.pddl` and
+  `logic/alfred.twl2`. Use `--validate-data-load` when bringing up a new
+  cluster to run supported env load smoke tests.
 - Keep task source mirrors only when the env itself needs a checkout, for
   example WebShop. Source mirrors are not a replacement for Python runtime
   dependencies.
@@ -91,6 +100,11 @@ ${LOCAL_RUNTIME_DIR:-/tmp/server-ops-runtime}
 
 - Maintain one current node file as the IP source of truth. Launch/topology
   profiles select nodes by index.
+- For multi-node GPU jobs, make the routable training network interface an
+  explicit launch contract. Prefer `SOCKET_IFNAME=${MLP_SOCKET_IFNAME:-eth0}`
+  or a cluster-specific override, then propagate `NCCL_SOCKET_IFNAME`,
+  `GLOO_SOCKET_IFNAME`, and `TP_SOCKET_IFNAME` into Ray actor runtime envs.
+  Do not rely on outer-shell exports reaching Ray actors.
 - After resource reset: update node file, materialize runtime/data, start
   watchdog/bench, then launch jobs.
 - Before launching training, stop bench on selected nodes. If training fails and
