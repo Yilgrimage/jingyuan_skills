@@ -32,9 +32,10 @@ chmod +x "${ROOT_DIR}/scripts/"*.sh
 ```text
 ${ROOT_DIR}/scripts/run_bench.sh start|stop|status|restart [--nodes nodes.txt --node 0,1]
 ${ROOT_DIR}/scripts/gpu_idle_watchdog.sh start|stop|status|restart
+${ROOT_DIR}/scripts/prepare_data.sh --data alfworld,webshop,tau2
+${ROOT_DIR}/scripts/pack_data.sh --data alfworld,webshop,tau2
 ${ROOT_DIR}/scripts/prepare_node_runtime.sh --local-only|--all-nodes ...
 ${ROOT_DIR}/scripts/materialize_node_runtime.sh --envs ... --data ... --sources ...
-${ROOT_DIR}/scripts/pack_data.sh
 ```
 
 Project launchers may call these scripts, but must not reimplement bench,
@@ -76,15 +77,21 @@ ${LOCAL_RUNTIME_DIR:-/tmp/server-ops-runtime}
   training. It is part of the Slime runtime, not a separate runtime component.
 - Keep task envs separate: ALFWorld, WebShop, tau2, AppWorld, MCP servers, and
   other env dependencies get their own packs.
-- Keep task data separate from env packs. Data may be provided as
-  `${ROOT_DIR}/data/<name>`, `${ROOT_DIR}/packs/<name>-data.tar.gz`, or by a
-  supported downloader during `prepare_node_runtime.sh --data <name>
-  --auto-download-data`.
-- Validate task data after materialization. Domain-specific datasets should
-  fail fast on missing required files; for example ALFWorld needs paired
-  `game.tw-pddl`/`traj_data.json` files plus `logic/alfred.pddl` and
-  `logic/alfred.twl2`. Use `--validate-data-load` when bringing up a new
+- Keep task data separate from env packs. Data preparation is a shared-storage
+  phase: run `prepare_data.sh --data ...` to download or construct
+  `${ROOT_DIR}/data/<name>`, then `pack_data.sh --data ...` to write immutable
+  `${ROOT_DIR}/packs/<name>-data.tar.gz` artifacts. Node materialization never
+  downloads data; it only unpacks a data pack or copies an already prepared
+  `${ROOT_DIR}/data/<name>` directory.
+- Validate task data before packing and after materialization. Domain-specific
+  datasets should fail fast on missing required files; for example ALFWorld
+  needs paired `game.tw-pddl`/`traj_data.json` files plus `logic/alfred.pddl`
+  and `logic/alfred.twl2`. Use `--validate-data-load` when bringing up a new
   cluster to run supported env load smoke tests.
+- Keep optional reporting clients isolated when cluster images disagree. A
+  `wandb` conda pack may be materialized like any other env pack; training
+  repos should prefer that pack, fall back to the foundation runtime, then to a
+  version-compatible local Python if they choose to support W&B.
 - Keep task source mirrors only when the env itself needs a checkout, for
   example WebShop. Source mirrors are not a replacement for Python runtime
   dependencies.

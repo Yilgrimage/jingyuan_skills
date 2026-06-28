@@ -19,6 +19,9 @@ adding compensating wrappers.
 - Use `${ROOT_DIR}/scripts/run_bench.sh`,
   `${ROOT_DIR}/scripts/gpu_idle_watchdog.sh`, and
   `${ROOT_DIR}/scripts/prepare_node_runtime.sh`; do not duplicate them here.
+- Prepare task data through `${ROOT_DIR}/scripts/prepare_data.sh`, pack it with
+  `${ROOT_DIR}/scripts/pack_data.sh`, and let node materialization only unpack
+  or copy validated data. Agentic Slime launch code should not download data.
 
 ## Configuration Ownership
 
@@ -56,6 +59,10 @@ Do not include model names or aux providers in train profile names.
   fallbacks, or repo-specific Megatron paths to agentic training scripts.
 - `MEGATRON_PATH` may appear only as the resolved backend path exported by the
   Slime runtime resolver and used in `PYTHONPATH`.
+- W&B is an optional reporting runtime. Prefer a separate `wandb` env pack when
+  cluster images ship incompatible SDKs, then fall back to the Slime runtime,
+  then to a version-compatible local Python. Do not install W&B during training
+  startup.
 
 ## Launch Contract
 

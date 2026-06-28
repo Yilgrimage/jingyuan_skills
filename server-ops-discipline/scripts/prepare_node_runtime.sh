@@ -19,7 +19,6 @@ ENVS=${ENVS:-none}
 DATASETS=${DATASETS:-none}
 MODELS=${MODELS:-none}
 SOURCES=${SOURCES:-none}
-AUTO_DOWNLOAD_DATASETS=${AUTO_DOWNLOAD_DATASETS:-0}
 VALIDATE_DATA=${VALIDATE_DATA:-1}
 VALIDATE_DATA_LOAD=${VALIDATE_DATA_LOAD:-0}
 FORCE=0
@@ -50,6 +49,8 @@ Usage: prepare_node_runtime.sh [options]
 Prepare local or multi-node runtime assets. This script does not start Ray,
 env servers, or training.
 Nothing environment-specific is materialized unless explicitly selected.
+This script never downloads data. Run prepare_data.sh and pack_data.sh before
+node materialization when shared data is missing.
 
 Options:
   --local-only         Prepare only the current node (default)
@@ -61,9 +62,6 @@ Options:
   --data LIST         Comma list of dataset names, or none
   --models none       Kept for compatibility. Model copying is disabled; training reads models from shared storage.
   --sources LIST      Comma list of source checkout names, or none
-  --auto-download-data
-                      Download supported datasets into ROOT_DIR/data when no
-                      local source or data pack exists
   --no-validate-data  Skip dataset layout validation after materialization
   --validate-data-load
                       Run supported env load smoke tests after materialization
@@ -89,7 +87,6 @@ while [ $# -gt 0 ]; do
     --data) DATASETS=$2; shift 2 ;;
     --models) MODELS=$2; shift 2 ;;
     --sources) SOURCES=$2; shift 2 ;;
-    --auto-download-data) AUTO_DOWNLOAD_DATASETS=1; shift ;;
     --no-validate-data) VALIDATE_DATA=0; shift ;;
     --validate-data-load) VALIDATE_DATA_LOAD=1; shift ;;
     --force) FORCE=1; shift ;;
@@ -108,7 +105,6 @@ materialize_args=(
 )
 [ "${FORCE}" -eq 0 ] || materialize_args+=(--force)
 [ "${CHECK_HASH}" -eq 1 ] || materialize_args+=(--no-check-hash)
-[ "${AUTO_DOWNLOAD_DATASETS}" = "0" ] || materialize_args+=(--auto-download-data)
 [ "${VALIDATE_DATA}" = "1" ] || materialize_args+=(--no-validate-data)
 [ "${VALIDATE_DATA_LOAD}" = "0" ] || materialize_args+=(--validate-data-load)
 
@@ -330,7 +326,6 @@ submit_head_prepare() {
     [ -z "${NODE_SELECTOR}" ] || printf '%q ' --node "${NODE_SELECTOR}"
     [ "${FORCE}" -eq 0 ] || printf '%q ' --force
     [ "${CHECK_HASH}" -eq 1 ] || printf '%q ' --no-check-hash
-    [ "${AUTO_DOWNLOAD_DATASETS}" = "0" ] || printf '%q ' --auto-download-data
     [ "${VALIDATE_DATA}" = "1" ] || printf '%q ' --no-validate-data
     [ "${VALIDATE_DATA_LOAD}" = "0" ] || printf '%q ' --validate-data-load
   )
