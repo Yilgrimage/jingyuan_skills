@@ -45,6 +45,16 @@ require_dir_with_file() {
   fi
 }
 
+require_no_stale_path() {
+  local path=$1
+  local stale=${2:-/tmp/mlf-runtime}
+  [ -e "${path}" ] || return 0
+  if grep -Rsl --exclude='._*' -- "${stale}" "${path}" >/dev/null 2>&1; then
+    echo "Stale local path ${stale} found under ${path}" >&2
+    return 1
+  fi
+}
+
 alfworld_has_paired_game() {
   local split_dir=$1
   local game_file
@@ -161,6 +171,10 @@ validate_tau2_data() {
     require_file "${file}" || missing=1
   done
   require_dir_with_file "${data_dir}/areal_synthetic/tau2_rl_database" || missing=1
+  require_dir_with_file "${data_dir}/areal_synthetic/tasks" || missing=1
+  require_file "${data_dir}/areal_synthetic_prompt/train_all.jsonl" || missing=1
+  require_no_stale_path "${data_dir}/areal_synthetic/tasks" || missing=1
+  require_no_stale_path "${data_dir}/areal_synthetic_prompt" || missing=1
   [ "${missing}" -eq 0 ]
 }
 
@@ -315,6 +329,32 @@ download_tau2_areal() {
   "${python}" "${script}" --output-dir "${dst}"
 }
 
+generate_tau2_areal_artifacts() {
+  local data_dir=$1
+  local python=${PYTHON:-python3}
+  local script="${ROOT_DIR}/code/slime/examples/agent_env/tau2/prompt_data.py"
+  local task_ref_root='${AGENT_ENV_DATA_DIR}/areal_synthetic'
+  [ -f "${script}" ] || {
+    echo "Cannot generate tau2 AReaL prompt data: missing ${script}" >&2
+    return 1
+  }
+  require_file "${data_dir}/areal_synthetic/tau2_rl_train.jsonl" || return 1
+  require_dir_with_file "${data_dir}/areal_synthetic/tau2_rl_database" || return 1
+  rm -rf "${data_dir}/areal_synthetic/tasks" "${data_dir}/areal_synthetic_prompt"
+  mkdir -p "${data_dir}/areal_synthetic_prompt"
+  "${python}" "${script}" \
+    --source areal_synthetic \
+    --output "${data_dir}/areal_synthetic_prompt/train_all.jsonl" \
+    --data-dir "${data_dir}/data" \
+    --areal-root "${data_dir}/areal_synthetic" \
+    --areal-input tau2_rl_train.jsonl \
+    --task-file-dir tasks \
+    --task-ref-root "${task_ref_root}" \
+    --domains retail,airline,telecom \
+    --split train \
+    --seed 42
+}
+
 prepare_tau2_data() {
   local dst="${ROOT_DIR}/data/tau2"
   local tmp="${dst}.tmp.$$"
@@ -325,10 +365,14 @@ prepare_tau2_data() {
     echo "tau2_DATA=${dst} (prepared)"
     return 0
   fi
-  normalized=$(normalize_tau2_official_source "${official_src}") || {
-    echo "Cannot prepare tau2 official data: set TAU2_DATA_SOURCE_DIR or provide ${dst}/data/tau2/domains." >&2
-    return 1
-  }
+  if ! normalized=$(normalize_tau2_official_source "${official_src}"); then
+    if [ -d "${dst}/data/tau2/domains" ]; then
+      normalized="${dst}/data"
+    else
+      echo "Cannot prepare tau2 official data: set TAU2_DATA_SOURCE_DIR or provide ${dst}/data/tau2/domains." >&2
+      return 1
+    fi
+  fi
   rm -rf "${tmp}"
   mkdir -p "${tmp}/data"
   copy_tree_excluding_parts "${normalized}" "${tmp}/data"
@@ -338,7 +382,7 @@ prepare_tau2_data() {
       return 1
     }
     copy_tree_excluding_parts "${normalized}" "${tmp}/areal_synthetic"
-  elif [ -d "${dst}/areal_synthetic" ] && [ "${FORCE:-0}" -eq 0 ]; then
+  elif [ -d "${dst}/areal_synthetic" ]; then
     copy_tree_excluding_parts "${dst}/areal_synthetic" "${tmp}/areal_synthetic"
   elif ops_bool_enabled "${TAU2_DOWNLOAD_AREAL:-0}"; then
     download_tau2_areal "${tmp}/areal_synthetic"
@@ -347,6 +391,7 @@ prepare_tau2_data() {
     echo "Cannot prepare tau2 AReaL synthetic data: provide TAU2_AREAL_SOURCE_DIR or set TAU2_DOWNLOAD_AREAL=1." >&2
     return 1
   fi
+  generate_tau2_areal_artifacts "${tmp}"
   validate_tau2_data "${tmp}"
   rm -rf "${dst}"
   mv "${tmp}" "${dst}"

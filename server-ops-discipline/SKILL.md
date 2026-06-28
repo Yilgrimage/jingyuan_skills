@@ -83,6 +83,10 @@ ${LOCAL_RUNTIME_DIR:-/tmp/server-ops-runtime}
   `${ROOT_DIR}/packs/<name>-data.tar.gz` artifacts. Node materialization never
   downloads data; it only unpacks a data pack or copies an already prepared
   `${ROOT_DIR}/data/<name>` directory.
+- Data packs must contain every file an env server can need on any selected
+  node. For tau2, `prepare_data.sh --data tau2` must produce both raw
+  official/AReaL data and portable generated AReaL task/prompt files; training
+  launch should not generate node-local tau2 task files.
 - Validate task data before packing and after materialization. Domain-specific
   datasets should fail fast on missing required files; for example ALFWorld
   needs paired `game.tw-pddl`/`traj_data.json` files plus `logic/alfred.pddl`

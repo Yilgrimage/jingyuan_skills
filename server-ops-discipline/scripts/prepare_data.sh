@@ -37,6 +37,10 @@ Optional dataset inputs:
   TAU2_DATA_SOURCE_DIR      tau2 official data root, usually code/tau2-bench/data
   TAU2_AREAL_SOURCE_DIR     AReaL synthetic tau2 root with tau2_rl_train.jsonl
   TAU2_DOWNLOAD_AREAL=1     Download AReaL synthetic tau2 data if no local source exists
+
+tau2 preparation also generates portable AReaL task files and prompt JSONL under
+ROOT_DIR/data/tau2. Pack and materialize that data on every node that can host
+an env server.
 EOF
 }
 
