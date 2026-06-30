@@ -45,6 +45,9 @@ watchdog, node materialization, SSH fanout, or root discovery.
 
 - Durable: code, packs, data, models, secrets, runs, and node files live under
   `${ROOT_DIR}`.
+  If a cluster puts a smaller quota on the workspace tree, keep the same public
+  layout and make `${ROOT_DIR}/models` or `${ROOT_DIR}/runs` symlinks to the
+  real shared-storage locations.
 - Disposable: extracted envs, source mirrors, data mirrors, Ray temp state, and
   service scratch live on node-local disks such as `/tmp`.
 - Do not install packages during normal training startup. Build packs first,
@@ -65,6 +68,19 @@ ${ROOT_DIR}/scripts
 ${LOCAL_ENVS_DIR:-/tmp/server-ops-envs}
 ${LOCAL_RUNTIME_DIR:-/tmp/server-ops-runtime}
 ```
+
+On the current A100 cluster, `${ROOT_DIR}` is
+`/mnt/bn/jixf-nas-lq/mlf`. Models and run outputs are physically stored outside
+that quota tree, but remain available through standard symlinks:
+
+```bash
+${ROOT_DIR}/models -> /mnt/bn/jixf-nas-lq/yanjingyuan_models
+${ROOT_DIR}/runs   -> /mnt/bn/jixf-nas-lq/yanjingyuan_runs
+```
+
+Treat this as an A100-local storage layout. H100 or other clusters should use
+their own shared NAS target paths behind the same `${ROOT_DIR}/models` and
+`${ROOT_DIR}/runs` names, not these concrete A100 paths.
 
 ## Runtime Packs
 

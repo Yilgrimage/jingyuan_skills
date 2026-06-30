@@ -76,6 +76,10 @@ Do not include model names or aux providers in train profile names.
   env/router/aux lifecycle, bench/watchdog settings, and run directories.
 - Keep resolved files in run directories and out of git. Do not freeze arbitrary
   ambient shell variables into them.
+- Use `${ROOT_DIR}/models` for durable model checkpoints and `${ROOT_DIR}/runs`
+  for run outputs. If a cluster needs those artifacts in another NAS quota
+  tree, handle that with symlinks at the server-ops layer; do not add alternate
+  artifact roots to training profiles or scripts.
 
 ## Rollout And Reward
 

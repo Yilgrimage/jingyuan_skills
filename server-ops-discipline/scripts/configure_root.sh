@@ -11,7 +11,8 @@ Usage: configure_root.sh [ROOT_DIR] [--yes] [--config FILE]
 
 Write the local, non-git server-ops root config. ROOT_DIR should be the shared
 cluster workspace root that contains scripts/, code/, data/, models/, packs/,
-runs/, and secrets/ as applicable.
+runs/, and secrets/ as applicable. If models/ or runs/ must live under another
+NAS quota tree, keep these names as symlinks under ROOT_DIR.
 EOF
 }
 
@@ -41,7 +42,6 @@ if [ -z "${ROOT_ARG}" ] || [[ "${ROOT_ARG}" != /* ]]; then
   echo "ROOT_DIR must be an absolute path" >&2
   exit 2
 fi
-
 ROOT_ARG=${ROOT_ARG%/}
 echo "ROOT_DIR=${ROOT_ARG}"
 if [ "${ASSUME_YES}" != "1" ]; then
