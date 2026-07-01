@@ -32,8 +32,8 @@ chmod +x "${ROOT_DIR}/scripts/"*.sh
 ```text
 ${ROOT_DIR}/scripts/run_bench.sh start|stop|status|restart [--nodes nodes.txt --node 0,1]
 ${ROOT_DIR}/scripts/gpu_idle_watchdog.sh start|stop|status|restart
-${ROOT_DIR}/scripts/prepare_data.sh --data alfworld,webshop,tau2,mcp_server
-${ROOT_DIR}/scripts/pack_data.sh --data alfworld,webshop,tau2,mcp_server
+${ROOT_DIR}/scripts/prepare_data.sh --data alfworld,webshop,tau2,appworld,mcp_server
+${ROOT_DIR}/scripts/pack_data.sh --data alfworld,webshop,tau2,appworld,mcp_server
 ${ROOT_DIR}/scripts/prepare_node_runtime.sh --local-only|--all-nodes ...
 ${ROOT_DIR}/scripts/materialize_node_runtime.sh --envs ... --data ... --sources ...
 ```
@@ -103,6 +103,10 @@ their own shared NAS target paths behind the same `${ROOT_DIR}/models` and
   node. For tau2, `prepare_data.sh --data tau2` must produce both raw
   official/AReaL data and portable generated AReaL task/prompt files; training
   launch should not generate node-local tau2 task files.
+- AppWorld data packs must include official datasets, base DBs, and task specs
+  under `${ROOT_DIR}/data/appworld/data`. `prepare_data.sh --data appworld`
+  may download through the AppWorld CLI when the AppWorld env is available, or
+  copy an existing portable tree from `APPWORLD_DATA_SOURCE_DIR`.
 - Private MCP server datasets may come from another NAS checkout rather than a
   public downloader. Treat that checkout as an input source only: copy the
   required JSON/JSONL task files and referenced assets into

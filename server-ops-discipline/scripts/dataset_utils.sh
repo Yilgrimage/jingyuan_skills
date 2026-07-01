@@ -178,6 +178,50 @@ validate_tau2_data() {
   [ "${missing}" -eq 0 ]
 }
 
+validate_appworld_data() {
+  local data_dir=$1
+  local missing=0
+  for file in \
+    "${data_dir}/data/datasets/train.txt" \
+    "${data_dir}/data/datasets/dev.txt" \
+    "${data_dir}/data/datasets/test_normal.txt" \
+    "${data_dir}/data/datasets/test_challenge.txt" \
+    "${data_dir}/data/base_dbs/version.txt"; do
+    require_file "${file}" || missing=1
+  done
+  require_dir_with_file "${data_dir}/data/base_dbs" || missing=1
+  if ! find "${data_dir}/data/tasks" -type f -name specs.json -print -quit 2>/dev/null | grep -q .; then
+    echo "AppWorld data has no task specs under ${data_dir}/data/tasks" >&2
+    missing=1
+  fi
+  [ "${missing}" -eq 0 ]
+}
+
+smoke_appworld_data_load() {
+  local data_dir=$1
+  local python="${LOCAL_ENVS_DIR:-/tmp/server-ops-envs}/appworld/bin/python"
+  [ -x "${python}" ] || {
+    echo "Cannot run AppWorld data load smoke: missing ${python}. Materialize the appworld env first or set LOCAL_ENVS_DIR." >&2
+    return 1
+  }
+  APPWORLD_ROOT="${data_dir}" HOME="${data_dir}" "${python}" - <<'PY'
+from appworld.environment import AppWorld
+from appworld.task import load_task_ids
+
+task_ids = load_task_ids(dataset_name="train")
+if not task_ids:
+    raise RuntimeError("AppWorld train split loaded no task ids")
+world = AppWorld(task_ids[0], experiment_name="server_ops_data_smoke", max_interactions=1, raise_on_failure=False)
+try:
+    instruction = getattr(world.task, "instruction", "")
+    if not instruction:
+        raise RuntimeError("AppWorld first task has empty instruction")
+finally:
+    world.close()
+print("AppWorld data load smoke passed")
+PY
+}
+
 validate_mcp_server_data() {
   local data_dir=$1
   local required_file
@@ -213,6 +257,11 @@ validate_dataset() {
       ;;
     tau2)
       validate_tau2_data "${data_dir}" || return 1
+      ;;
+    appworld)
+      validate_appworld_data "${data_dir}" || return 1
+      ops_bool_enabled "${validate_data_load}" || return 0
+      smoke_appworld_data_load "${data_dir}" || return 1
       ;;
     mcp_server)
       validate_mcp_server_data "${data_dir}" || return 1
@@ -416,6 +465,52 @@ prepare_tau2_data() {
   echo "tau2_DATA=${dst}"
 }
 
+find_appworld_cli() {
+  local candidate="${LOCAL_ENVS_DIR:-/tmp/server-ops-envs}/appworld/bin/appworld"
+  if [ -x "${candidate}" ]; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+  command -v appworld 2>/dev/null || return 1
+}
+
+prepare_appworld_data() {
+  local dst="${ROOT_DIR}/data/appworld"
+  local tmp="${dst}.tmp.$$"
+  local src="${APPWORLD_DATA_SOURCE_DIR:-}"
+  local appworld_cli
+  if [ "${FORCE:-0}" -eq 0 ] && validate_appworld_data "${dst}" >/dev/null 2>&1; then
+    echo "appworld_DATA=${dst} (prepared)"
+    return 0
+  fi
+
+  rm -rf "${tmp}"
+  mkdir -p "${tmp}"
+  if [ -n "${src}" ]; then
+    [ -d "${src}" ] || {
+      echo "Invalid APPWORLD_DATA_SOURCE_DIR: ${src}" >&2
+      rm -rf "${tmp}"
+      return 1
+    }
+    echo "Preparing AppWorld data from ${src} -> ${dst}"
+    copy_tree_excluding_parts "${src}" "${tmp}"
+  else
+    appworld_cli=$(find_appworld_cli) || {
+      echo "Cannot prepare AppWorld data: appworld CLI not found. Materialize the appworld env first or provide APPWORLD_DATA_SOURCE_DIR." >&2
+      rm -rf "${tmp}"
+      return 1
+    }
+    echo "Preparing AppWorld data with ${appworld_cli} -> ${dst}"
+    HOME="${tmp}" APPWORLD_ROOT="${tmp}" "${appworld_cli}" install --root "${tmp}"
+    HOME="${tmp}" APPWORLD_ROOT="${tmp}" "${appworld_cli}" download data --root "${tmp}"
+  fi
+  validate_appworld_data "${tmp}"
+  rm -rf "${dst}"
+  mv "${tmp}" "${dst}"
+  validate_dataset appworld "${dst}"
+  echo "appworld_DATA=${dst}"
+}
+
 copy_optional_file() {
   local src=$1
   local dst=$2
@@ -473,6 +568,7 @@ prepare_dataset() {
     alfworld) prepare_alfworld_data ;;
     webshop) prepare_webshop_data ;;
     tau2) prepare_tau2_data ;;
+    appworld) prepare_appworld_data ;;
     mcp_server) prepare_mcp_server_data ;;
     *) echo "No prepare implementation for dataset: ${name}" >&2; return 1 ;;
   esac
