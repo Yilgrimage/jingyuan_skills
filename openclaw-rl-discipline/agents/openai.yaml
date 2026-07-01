@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenClaw RL Discipline"
+  short_description: "Run and debug OpenClaw-RL safely."
+  default_prompt: "Use $openclaw-rl-discipline to debug an OpenClaw-RL rollout backend or ROPD training issue."
