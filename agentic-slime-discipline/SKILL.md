@@ -59,10 +59,10 @@ Do not include model names or aux providers in train profile names.
   fallbacks, or repo-specific Megatron paths to agentic training scripts.
 - `MEGATRON_PATH` may appear only as the resolved backend path exported by the
   Slime runtime resolver and used in `PYTHONPATH`.
-- W&B is an optional reporting runtime. Prefer a separate `wandb` env pack when
-  cluster images ship incompatible SDKs, then fall back to the Slime runtime,
-  then to a version-compatible local Python. Do not install W&B during training
-  startup.
+- W&B is an optional reporting runtime. If W&B is enabled, it must come from a
+  separate materialized `wandb` env pack. Do not fall back to Slime, image,
+  system, user-site, or local Python W&B installs, and do not install W&B during
+  training startup.
 
 ## Launch Contract
 
@@ -85,6 +85,18 @@ Do not include model names or aux providers in train profile names.
 
 - Env wrappers own prompt rendering, parser/action semantics, reset/step calls,
   success/score interpretation, and env-specific metadata.
+- Prompt data is a run-local contract, not a cache. Regenerate prompt-data
+  JSONL at every training launch, then validate it before passing it to Slime.
+- Prompt data rows must have a non-empty `prompt` and a metadata object with
+  explicit task identity. For known envs, `prompt` is the policy/system prompt;
+  env server composes the first user message from the selected task plus reset
+  observation/actions/docs.
+- Do not add fallback prompts. If a prompt template, task id, task ref, policy
+  document, or task payload cannot be loaded, fail fast instead of substituting
+  generic model context.
+- Env servers must honor task identity from prompt data. Prefer stable
+  `task_id`, `task_ref`, or task payload over implicit index; if metadata and
+  env data disagree, raise an error.
 - Generic rollout code owns message/token accounting, env HTTP lease lifecycle,
   sample shape, common dumping, infra discard, and Slime data contracts.
 - Reward implementations own final reward composition. Select them through
