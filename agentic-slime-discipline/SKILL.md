@@ -109,6 +109,13 @@ Do not include model names or aux providers in train profile names.
 - Align `GLOBAL_BATCH_SIZE`, `ROLLOUT_BATCH_SIZE * N_SAMPLES_PER_PROMPT`, and
   full-async in-flight capacity unless deliberately testing staleness.
 - Keep checkpointing sparse and capped during debugging.
+- When comparing agentic RL papers or repos, distinguish true multi-turn env
+  interaction from pseudo multi-turn single-step training. Avoid treating
+  `verl-agent`/GiGPO-style pipelines as evidence for our setting when they
+  replay a short history window inside each prompt, train one action at a time,
+  or do not let the environment own state transitions between policy calls.
+  Prefer references where a rollout is one complete interactive episode and
+  rewards are assigned from the environment trajectory.
 
 ## Change Discipline
 
