@@ -125,6 +125,9 @@ their own shared NAS target paths behind the same `${ROOT_DIR}/models` and
   `${ROOT_DIR}/packs/wandb.tar.gz`, and materialize it like any other env pack.
   Training repos must not use W&B from the foundation runtime, image Python,
   system Python, or user-site packages.
+- Formal training runs must enable W&B and use the materialized `wandb` pack.
+  `ENABLE_WANDB=0` is acceptable only for smoke tests, launch validation, or
+  other short debugging runs where missing experiment curves are intentional.
 - Keep task source mirrors only when the env itself needs a checkout, for
   example WebShop. Source mirrors are not a replacement for Python runtime
   dependencies.
