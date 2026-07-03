@@ -70,18 +70,30 @@ ${LOCAL_ENVS_DIR:-/tmp/server-ops-envs}
 ${LOCAL_RUNTIME_DIR:-/tmp/server-ops-runtime}
 ```
 
-On the current A100 cluster, `${ROOT_DIR}` is
-`/mnt/bn/jixf-nas-lq/mlf`. Models and run outputs are physically stored outside
-that quota tree, but remain available through standard symlinks:
+Known cluster roots for operator lookup:
 
-```bash
-${ROOT_DIR}/models -> /mnt/bn/jixf-nas-lq/yanjingyuan_models
-${ROOT_DIR}/runs   -> /mnt/bn/jixf-nas-lq/yanjingyuan_runs
+```text
+H100 ecomcommonnas:
+  ROOT_DIR=/mnt/bn/ecomcommonnas/yanjingyuan
+  CODE_DIR=/mnt/bn/ecomcommonnas/yanjingyuan/Code
+  PACK_DIR=/mnt/bn/ecomcommonnas/yanjingyuan/packs
+  SECRETS_DIR=/mnt/bn/ecomcommonnas/yanjingyuan/secrets
+  NODE_FILE=/mnt/bn/ecomcommonnas/yanjingyuan/scripts/ip.txt
+  MODEL_DIR=/mnt/bn/ecomcommonnas/mlf/models
+  SSH_PORT=10413
+
+A100 jixf-nas-lq:
+  ROOT_DIR=/mnt/bn/jixf-nas-lq/mlf
+  MODEL_DIR=/mnt/bn/jixf-nas-lq/yanjingyuan_models
+  RUNS_DIR=/mnt/bn/jixf-nas-lq/yanjingyuan_runs
 ```
 
-Treat this as an A100-local storage layout. H100 or other clusters should use
-their own shared NAS target paths behind the same `${ROOT_DIR}/models` and
-`${ROOT_DIR}/runs` names, not these concrete A100 paths.
+These concrete paths are handoff aids, not portable config. Confirm the active
+cluster root and node file before launch. When a cluster has separate quota or
+performance tiers, keep the public layout stable and place symlinks behind
+`${ROOT_DIR}/models`, `${ROOT_DIR}/runs`, or other top-level names. Do not
+commit concrete cluster paths in training repo configs.
+
 
 ## Runtime Packs
 
@@ -156,6 +168,19 @@ their own shared NAS target paths behind the same `${ROOT_DIR}/models` and
   separate keepalive implementation in training repos.
 - Reset experiments by stopping only selected train/Ray/env processes. Do not
   kill unrelated user processes.
+- Avoid `pkill -f <pattern>` in SSH one-liners. The pattern can match the
+  remote shell command itself and kill the active SSH session before cleanup
+  finishes. Prefer stopping a named tmux session, or list PIDs first with
+  `pgrep -af`, filter out the current shell/grep/ssh command, then kill exact
+  PIDs.
+- Ark/Seed CN endpoints may be reachable from the development machine but fail
+  from GPU training nodes with TLS EOF or connection timeout. Treat this as a
+  network path issue, not a Python dependency or harness bug. When local access
+  works, run a small OpenAI-compatible proxy on the development machine and
+  expose it to the node with SSH reverse forwarding, for example:
+  `ssh -N -T -R 127.0.0.1:<node_port>:127.0.0.1:<local_proxy_port> ...`.
+  Validate from the node with `/health` and a minimal chat/tool-call request
+  before using it in a rollout.
 
 ## GPU Keepalive
 

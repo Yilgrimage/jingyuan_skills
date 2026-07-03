@@ -1,142 +1,281 @@
 ---
 name: openclaw-rl-discipline
-description: "Use when editing, launching, reviewing, or debugging the OpenClaw-RL training/evaluation stack: mlf-dev based OpenClaw-RL forks, Hermes/OpenClaw/DeerFlow rollout backends, OpenClaw agent runtime materialization, business skills exposure, BatchQA/OpenClaw QA data, ROPD reward integration, trace/proxy diagnostics, and keeping OpenClaw-RL responsibilities separate from server ops and agentic Slime."
+description: "Use when editing, launching, reviewing, or debugging OpenClaw-RL and its external-agent backends such as Hermes, OpenClaw, DeerFlow, or Codex; especially when checking adapter boundaries, prompt/skills/tool fidelity, rollout traces, ROPD reward integration, and upstream harness/runtime alignment."
 ---
 
 # OpenClaw-RL Discipline
 
-## Boundaries
+## Principle
 
-Use this skill for OpenClaw-RL repo behavior and runtime semantics. Keep these responsibilities separate:
+Treat OpenClaw-RL as a thin RL outer loop around a real agent harness. The
+training adapter must not become the harness. If a run only works because the
+adapter changed prompts, tools, skills, memory, search, final-answer behavior,
+or model-visible metadata, the run is not a faithful OpenClaw-RL rollout.
 
-- `server-ops-discipline`: node files, SSH fanout, bench/watchdog, root layout, env/data packs, node-local materialization.
-- `agentic-slime-discipline`: agentic Slime configs, env abstraction, Slime-specific launch contracts.
-- `openclaw-rl-discipline`: OpenClaw-RL fork diffs, rollout backend choice, Hermes/OpenClaw adapter behavior, skills loading, BatchQA/OpenClaw QA data, ROPD reward, trace/proxy diagnostics.
+## Ownership
 
-Do not move OpenClaw-RL-specific rules into server ops. Do not copy generic bench/watchdog/materialization logic into OpenClaw-RL.
+- `openclaw_batch_qa.py`: batch/group scheduling, external-agent subprocess
+  launch, proxy sample collection, trace metadata, and reward hooks.
+- Backend harness: Hermes/OpenClaw/DeerFlow/Codex prompt construction, tool
+  selection, skill discovery, tool execution, and final-answer behavior.
+- Backend adapter: isolated runtime setup, model-provider routing to the local
+  policy proxy, non-model-visible session propagation, process launch, and
+  result parsing.
+- Server ops: node files, SSH fanout, bench/watchdog, env packs, and
+  node-local materialization. Do not reimplement these in OpenClaw-RL.
 
-## First Checks
+## Adapter Boundary
 
-Before changing code or launching a run:
+An adapter may:
 
-1. Check the active repo and branch with `git status --short --branch`.
-2. Identify whether the checkout is upstream `mlf_dev`, a user branch, or a migration branch.
-3. Inspect the effective backend: `OPENCLAW_QA_ROLLOUT_BACKEND`.
-4. Treat Hermes, OpenClaw, and DeerFlow as validated mlf-dev training backends unless current logs prove otherwise. If one fails in a fork, first suspect runtime materialization, env packs, credentials, paths, or dependency conflicts.
-5. Verify selected node-local backend runtime files before starting GPUs:
-   - Hermes backend: `~/.hermes/hermes-agent-local/current/run_agent.py`, `~/.hermes/skills`, `~/.hermes/config.yaml`, `~/.hermes/.env`.
-   - OpenClaw backend: `~/.openclaw-rl-agent-backends/openclaw/current/openclaw.mjs`, `~/.local/bin/openclaw-rl-agent-openclaw-adapter`.
-   - DeerFlow backend: `~/.openclaw-rl-agent-backends/deer-flow/current` and its configured gateway.
-6. Stop bench only immediately before training; restart bench if the run fails or leaves GPUs idle.
+- Create an isolated home/workspace required by the backend.
+- Point the backend's model provider at the OpenClaw-RL policy proxy.
+- Pass `session_id` through environment variables, HTTP headers, request
+  metadata, or command arguments that are not shown to the model.
+- Expose the already-materialized business skills directory exactly as the
+  backend expects, preferably by symlink.
+- Start backend-local helper processes that are part of the real harness.
+- Return structured stdout/stderr/final-response metadata to `openclaw_batch_qa`.
 
-## Backend Semantics
+An adapter must not:
 
-`OPENCLAW_QA_ROLLOUT_BACKEND=hermes` means OpenClaw-RL calls Hermes AIAgent directly. A known-good Hermes setup uses NAS as source, but runs node-local:
+- Set `systemPromptOverride` or otherwise replace the backend's native system
+  prompt for a real run.
+- Write model-visible bootstrap files that tell the model how to behave for RL.
+- Inject session ids, dataset labels, teacher answers, expected skills, or
+  scoring hints into model-visible context.
+- Remove or add tools/skills to compensate for model weakness.
+- Patch final-answer extraction or tool protocols unless the same change is part
+  of the real production/eval harness.
+- Enable/disable memory, browser/search, or MCP runtime behavior only as an
+  explicit run policy or runtime fix, and record it in the run artifacts.
+- Treat synthetic trace text with zero logprobs as valid training data without
+  an explicit experiment label.
 
-- source repo: shared checkout such as `.../mlf/code/hermes-agent`
-- node-local runtime: `~/.hermes/hermes-agent-local/current`
-- node-local skills: `~/.hermes/skills`
-- skills source: a shared zip such as `.../mlf/code/tmp_data/skills_0430.zip`
+## OpenClaw Backend Checks
 
-`OPENCLAW_QA_ROLLOUT_BACKEND=openclaw` means OpenClaw-RL calls the OpenClaw agent command. It needs a separate Node/OpenClaw runtime:
+For `HARNESS_BACKEND=openclaw`, the command should launch the real
+OpenClaw agent path. OpenClaw itself should build the system prompt through its
+native prompt builder and skills snapshot.
 
-- source repo may be shared storage, for example `.../mlf/code/openclaw`
-- node-local runtime must contain `~/.openclaw-rl-agent-backends/openclaw/current/openclaw.mjs`
-- wrapper must exist at `~/.local/bin/openclaw-rl-agent-openclaw-adapter`
-- business skills are controlled by `OPENCLAW_RL_AGENT_SKILL_DIRS` and `OPENCLAW_RL_AGENT_SKILLS`
+Before trusting any rollout data:
 
-`OPENCLAW_QA_ROLLOUT_BACKEND=deerflow` means OpenClaw-RL calls the DeerFlow agent service/gateway. It needs a node-local DeerFlow runtime under `~/.openclaw-rl-agent-backends/deer-flow/current`, a configured local gateway, and the same business skills exposed through the DeerFlow skill path.
+- Inspect generated OpenClaw config and confirm it has no `systemPromptOverride`.
+- Confirm the model-provider request carries `X-Session-Id` or equivalent
+  non-model-visible metadata.
+- Inspect `proxy_record.jsonl` and confirm the effective prompt contains the
+  native skills section expected by the selected OpenClaw version, for example
+  `## Skills` / `<available_skills>` when that is how the source harness works.
+- Confirm `trace.jsonl` has proxy samples with non-empty response ids/logprobs
+  for completed model turns.
+- Mark rollout data invalid if the adapter bypassed native skills prompt
+  construction or if the prompt/tool surface differs from the target harness.
 
-Do not treat `hermes_openclaw_adapter.py` as proof that the Hermes backend is active. In OpenClaw backend runs, that process can be only the local OpenAI-compatible model bridge used by OpenClaw to call the policy server.
+## Codex Backend Checks
 
-## Runtime Materialization
+For `HARNESS_BACKEND=codex`, Codex-specific code should stay in the
+Codex adapter: isolated `CODEX_HOME`, Codex CLI invocation, and any protocol
+translation needed to reach the policy proxy.
 
-NAS is the source of truth; node-local is the runtime. Do not run Python or Node dependency trees directly from NAS when they contain many small files.
+Codex uses the Responses API and can expose tools that chat-completions servers
+cannot represent. The default Codex bridge should be Responses pass-through:
+Codex talks to `/v1/responses`, and the middle layer only adds non-model-visible
+session metadata or narrow compatibility fixes. A Responses-to-chat bridge is a
+debug-only approximation and must require an explicit mode such as
+`HARNESS_CODEX_BRIDGE_MODE=chat_compat`. Do not use chat-compat rollout data
+for formal training/evaluation, and do not hide unsupported tools by adding
+prompt-written schemas.
 
-Prepare reusable backend packs for every backend that may be used in training. Packs should make a reset node reproducible without changing the agent harness:
+Use `HARNESS_*` as the external adapter control namespace. Shared knobs use
+`HARNESS_BACKEND`, `HARNESS_SESSION_ID`, `HARNESS_ADAPTER_BASE_URL`, and
+`HARNESS_AGENT_MODEL`; backend-specific knobs use `HARNESS_OPENCLAW_*` or
+`HARNESS_CODEX_*`. Do not introduce `OPENCLAW_RL_AGENT_*` compatibility
+fallbacks. `OPENCLAW_QA_*` belongs to BatchQA scheduling/proxy internals, not
+backend prompt or runtime mutation.
 
-- Hermes pack: local Hermes release/venv contract plus skills/env materialization inputs.
-- OpenClaw pack: local OpenClaw release, Node/pnpm dependencies if needed, adapter wrapper, workspace/persona files, and business skills materialization inputs.
-- DeerFlow pack: local DeerFlow release/env/gateway dependencies and business skills materialization inputs.
+## Tool Call Parser Validation
 
-Build packs from the mlf-dev validated runtime or its bootstrap scripts, publish immutable artifacts under the shared `packs` area, and materialize them to node-local paths before launch. Fix pack/env conflicts instead of editing rollout behavior.
+For Qwen/Qwen-Coder style models, raw XML-like assistant text such as
+`<tool_call><function=...>` is a parser failure unless the OpenAI-compatible
+response contains structured `message.tool_calls`.
 
-Use `scripts/materialize_openclaw_rl_workspace.sh` on each selected node to
-unpack the clean `openclaw-rl-workspace-data.tar.gz` pack into node-local
-`/tmp/server-ops-runtime/openclaw-rl/workspace-data/current` and mirror the
-business skills into DeerFlow's `deer-flow/current/skills/custom` when that
-backend is installed. This script is OpenClaw-RL-specific glue; it must not grow
-SSH fanout, bench/watchdog, conda-pack, or generic data-pack responsibilities.
+Before trusting rollouts that require tools:
 
-For Hermes, use the Hermes GPU bootstrap flow to bundle/copy the source into `~/.hermes/hermes-agent-local/releases/...`, install a local venv, unpack skills into `~/.hermes/skills`, and merge `.env`.
+- Run a forced tool-call smoke against the exact SGLang launch command.
+- Inspect `proxy_record.jsonl` or bridge debug: `finish_reason=tool_calls`
+  must have `has_tool_calls=true` and non-empty `tool_calls`.
+- Treat `finish_reason=tool_calls` with `message.tool_calls=null` as broken,
+  even if the assistant content contains a plausible XML tool call.
+- Confirm the backend actually executed the tool and received tool output in
+  the trace.
+- Verify the effective SGLang parser from logs and responses, not only from
+  the launch flag. `qwen`, `qwen25`, and `qwen3_coder` are not interchangeable,
+  and auto-detection can override expectations.
+- For Qwen3.5/Qwen-Coder-style tokenizer templates that instruct the model to
+  emit XML calls like `<function=...><parameter=...>`, launch SGLang with
+  `--tool-call-parser qwen3_coder`. Do not use `--tool-call-parser qwen` for
+  that template: it expects JSON inside `<tool_call>`, can log
+  `Failed to parse JSON part`, and can return `finish_reason=tool_calls` with
+  `message.tool_calls=null`.
+- After changing a parser, verify that the old server process is gone and the
+  active port belongs to the new command. Killing a tmux session is not enough
+  if an orphaned SGLang child still owns the port.
+- Do not patch the adapter to execute content-only XML unless that exact
+  behavior exists in the production/eval harness.
 
-For OpenClaw backend, use the OpenClaw agent backend bootstrap flow to build/install OpenClaw under `~/.openclaw-rl-agent-backends/openclaw/releases/...`, update `current`, install the rollout skill/personality files, and install the adapter wrapper.
+## Runtime And Skills
 
-For DeerFlow backend, use the agent backend bootstrap flow to install DeerFlow under `~/.openclaw-rl-agent-backends/deer-flow/releases/...`, update `current`, install the expected skills, and verify the configured gateway reaches the policy adapter.
+Keep runtime layers separate:
 
-If a bootstrap fails after building dependencies, prefer rerunning configuration with a skip-install/reuse path rather than rebuilding large dependency trees.
+- Backend runtime: Hermes/OpenClaw/DeerFlow/Codex binaries and their own deps.
+- Agent workspace: persona files and business skills exposed to the backend.
+- MCP runtime: Python/Node tools and credentials used by business skills.
+- Data: durable NAS files selected by the run config.
 
-## Harness Integrity
+Use split packs:
 
-Training and production/evaluation harness behavior must match. Do not make training succeed by narrowing the agent's capability surface unless the experiment explicitly studies that intervention.
+- `agent-business-skills.tar.gz`: business skills only.
+- `agent-persona.tar.gz`: `AGENTS.md`, `SOUL.md`, and `IDENTITY.md`.
+- `mcp-runtime-py312-agent-mcp.tar.gz`: Python/Node MCP runtime.
+- backend runtime packs such as `openclaw-rl-openclaw-runtime.tar.gz`,
+  `openclaw-rl-hermes-runtime.tar.gz`, `openclaw-rl-deerflow-runtime.tar.gz`,
+  and `codex-runtime-*.tar.gz`.
 
-- Do not remove tools, hide skills, inject answer labels, or expose dataset metadata that production would not expose.
-- Do not rewrite persona/system prompt files to compensate for model weakness. Use the mlf-dev validated persona/runtime files and only change documented configuration knobs.
-- Do not patch Hermes/OpenClaw/DeerFlow control flow to bypass real tool selection, skill discovery, MCP calls, or final-answer extraction.
-- Do not add smoke-only prompt hints, tool allowlists, fake skills, or backend-specific shortcuts to a real training run.
-- If model behavior is poor under the real harness, treat it as data/model/reward signal. If the harness crashes or cannot start, treat it as environment/materialization work.
+Pack responsibilities:
 
-## Trace Diagnostics
+```text
+Training runtime/image:
+  Runs OpenClaw-RL, Slime, Ray, SGLang/vLLM, torch, and rollout exporters.
+  It must be selected before sourcing MCP env files.
 
-Do not judge a rollout only from the main log. Always inspect run artifacts:
+Backend runtime pack:
+  Provides the external harness binary/source, for example OpenClaw, Hermes,
+  DeerFlow, or Codex. It does not contain business skills, data, or MCP Python.
 
-- `trace.jsonl`: per-sample backend result, status, final response extraction, reward deferral, and remove-sample flag.
-- `proxy_record.jsonl`: policy-server calls recorded by the local OpenAI-compatible proxy.
-- `train_metrics.jsonl`: Slime/OpenClaw-RL reward and train metrics.
+Agent workspace packs:
+  `agent-business-skills.tar.gz` contains only reusable Skill directories.
+  `agent-persona.tar.gz` contains only persona/bootstrap files.
+  They are materialized once per node and then symlinked or exposed through
+  native backend config. Do not copy them per conversation.
 
-Key interpretations:
+MCP runtime pack:
+  Provides the Python/Node/npx dependencies used by Skill scripts and MCP
+  callers, plus an env file pointing to secrets. It is for backend child
+  processes and tool runners, not for launching OpenClaw-RL training code.
 
-- `OpenClaw entrypoint not found: .../openclaw.mjs` means OpenClaw backend runtime is not materialized. It is not a model quality result.
-- `emitted no OpenClaw samples` plus empty `proxy_record.jsonl` means the external agent did not reach the policy model.
-- `status=aborted` and `remove_sample=true` means the sample should not be treated as useful training signal.
-- Empty final response can be a parser/runtime issue; check backend raw result and proxy records before blaming the model.
+Data:
+  Stays under durable NAS data paths selected by run config. Do not put data,
+  sessions, logs, or scratch outputs in reusable runtime packs.
+```
 
-## ROPD Integration
+Materialize business skills/persona with
+`scripts/materialize_agent_workspace_layers.sh`. Source the emitted
+`agent_workspace.env`; it provides `HARNESS_OPENCLAW_WORKSPACE`,
+`HARNESS_OPENCLAW_PERSONA_SOURCE_DIR`, `HARNESS_OPENCLAW_SKILL_DIRS`,
+`HARNESS_OPENCLAW_SKILLS`, and corresponding `HARNESS_CODEX_*`/
+`HARNESS_AGENT_*` paths.
 
-Keep ROPD as a reward-model path, not post-process reward glue:
+Materialize backend binaries/source with
+`scripts/materialize_agent_backend_runtime.sh --backend openclaw|hermes|deerflow|codex`.
+This restores only the harness runtime. It does not install business skills,
+persona, MCP Python/Node dependencies, credentials, data, or training packages.
+The script validates that backend packs do not contain mutable runtime state
+such as logs, sessions, caches, `tmp`, or user state. Rebuild dirty packs rather
+than carrying historical sessions into a fresh node.
 
-- use `CUSTOM_RM_PATH=ropd_reward.reward_func`
-- use `GROUP_RM=1` when the reward needs a group of student rollouts
-- keep rollout generation separate from reward scoring
-- prefer trace-aware answer modes that fit context, such as `final_with_no_tool_trace`, when full tool responses are too long
+Materialize MCP dependencies with `scripts/materialize_mcp_runtime.sh`. Source
+the emitted `mcp_runtime.env`; it provides `HARNESS_AGENT_ENV_FILE`,
+`HARNESS_AGENT_PYTHON_BIN_DIR`, `HARNESS_AGENT_NODE_BIN_DIR`, `MCP_PYTHON`,
+`AGENT_MCP_PYTHON_BIN_DIR`, and `AGENT_MCP_NODE_BIN_DIR`.
 
-A reasonable ROPD group contains the question/task, teacher/reference answer or trace, and multiple student rollouts. Rubric generation may know teacher/student roles. Verification should anonymize or shuffle answers when comparing scores.
+MCP runtime validation must cover the exact paths the agent can execute, not
+only `MCP_PYTHON`. Some business Skill docs call `python3` or a compatibility
+path such as `/Users/bytedance/miniconda3/bin/python`. After materialization,
+verify that `python3`, the compatibility path, and `MCP_PYTHON` all import the
+pack-provided `bytedenv` and `bytedance.mcp`. Set `PYTHONNOUSERSITE=1` for MCP
+tool child processes so stale packages under `/home/*/.local` cannot shadow the
+MCP runtime and cause errors such as `bytedenv` missing
+`get_current_vregion`.
 
-If the judge/rubric provider has TPM pressure, split rubric and judge across separate keys/endpoints before disabling reasoning or silently truncating traces.
+Do not let `mcp_runtime.env` choose the Python interpreter for OpenClaw-RL
+itself. Capture the training Python before sourcing MCP env files, for example
+`TRAIN_PYTHON=${TRAIN_PYTHON:-$(command -v python3)}`, and use that interpreter
+for rollout exporters and training entrypoints. The adapter may load
+`HARNESS_AGENT_ENV_FILE` and prepend MCP Python/Node paths only for the backend
+child process it starts.
 
-## Data And Skills
+Do not copy the full skills tree into every conversation. Materialize skills
+once per node and symlink them when the backend expects a workspace-local path.
+Do not pack session logs, temporary data, credentials, or historical scratch
+files into reusable runtime packs.
 
-Do not assume dataset metadata labels are available to the model at runtime. If production OpenClaw expects the model to discover skills from the skill directory, training/eval should preserve that behavior unless the experiment intentionally studies labeled skill hints.
+OpenClaw should see skills through its native config and skill loader:
+`agents.*.skills` selects enabled skill names, the workspace points at the
+materialized persona, and `${workspace}/skills` should be a symlink to the
+single materialized skills root. Do not create one symlink per skill inside a
+real `${workspace}/skills` directory: OpenClaw treats those child paths as
+`symlink-escape` and skips them. The adapter must not write bootstrap files,
+system prompt overrides, fake skills, or prompt-visible routing instructions.
 
-Keep OpenClaw-RL workspace/data packs clean and whitelist-based. Do not pack a whole `tmp_data` directory when it contains sessions, logs, historical archives, test scripts, eval scratch, or secrets. A training workspace pack should normally include only:
+When using a long persona, set OpenClaw's native bootstrap budget fields in the
+generated config, for example `agents.defaults.bootstrapMaxChars` and
+`agents.defaults.bootstrapTotalMaxChars`. Otherwise OpenClaw can truncate
+`AGENTS.md` at the default per-file limit even if the model context is large.
 
-- `train_data/` or the explicit training JSONL files required by the run
-- `skills/` containing the business skills that production/eval would expose
-- persona/workspace files such as `agents.md`, `soul.md`, and `IDENTITY.md` when the backend expects them
+Configure memory, browser, search, and MCP behavior in the backend runtime or
+OpenClaw config. Do not patch those settings from the RL adapter.
 
-Exclude `.env`, API keys, `sessions.zip`, `span.log`, `test_*.py`, old skills zip/tar archives, generated reports, and unrelated eval sets unless a specific run config explicitly needs one of them. Extra files in the agent workspace can change model behavior because the real harness may let the agent inspect local files.
+MCP auth and QPS plumbing belong in the MCP runtime/tool runner, not in the
+agent adapter. Validate auth by smoke-testing the actual PSMs used by the data;
+do not infer support from hard-coded PSM allowlists. Authorization failures for
+a PSM are not model behavior.
 
-When a model repeatedly reads random local files or generic skills:
+Expected node-local restore order:
 
-1. Inspect the actual sample distribution and required skills/tools metadata.
-2. Verify `OPENCLAW_RL_AGENT_SKILL_DIRS` points at the intended business skills.
-3. Verify the runtime prompt tells the agent how to read `SKILL.md` files without giving away answer labels.
-4. Compare against mlf-dev's actual training chain before adding harness shortcuts.
+```bash
+scripts/materialize_agent_workspace_layers.sh
+source /tmp/server-ops-runtime/agent-workspace/current/agent_workspace.env
 
-## Change Discipline
+scripts/materialize_mcp_runtime.sh \
+  --skills-dir "${HARNESS_OPENCLAW_SKILL_DIRS}" \
+  --smoke bytedance.mcp.machine_ipr
+source /tmp/server-ops-runtime/mcp/mcp_runtime.env
 
-Prefer new scripts/profiles for user experiments. Do not overwrite upstream mlf-dev paths unless explicitly syncing upstream. Keep uncommitted changes visible with `git status`; do not reset or delete user branches.
+scripts/materialize_agent_backend_runtime.sh --backend openclaw
+```
 
-Avoid patch piles in generic launchers. If a variable is backend-specific, keep it close to the OpenClaw-RL profile or adapter that owns it. Treat legacy names like `HERMES_*` as compatibility names only; verify the actual backend from `OPENCLAW_QA_ROLLOUT_BACKEND`.
+Capture the training Python before sourcing `mcp_runtime.env` if the same shell
+will launch OpenClaw-RL. MCP env intentionally prepends MCP Python/Node paths
+for backend child processes; it must not silently switch the training runtime.
 
-When a run fails, stop only selected OpenClaw-RL/Ray/SGLang/backend processes. Do not kill unrelated user processes or unrelated env servers.
+## Reward And ROPD
+
+Keep ROPD as a reward path, not rollout post-processing:
+
+- Use a custom/group reward function for rubric generation and judging.
+- Keep rollout generation independent from reward scoring.
+- Record the answer mode, teacher source, student trace source, judge model,
+  context compression, and retry policy in run artifacts.
+- Do not change the backend harness to make ROPD scoring easier.
+
+## Minimum Validation
+
+Run these checks before launching more than a smoke batch:
+
+```bash
+python -m py_compile openclaw-rl/openclaw_batch_qa.py openclaw-rl/openclaw_api_server.py mlf/agent_gpu_bootstrap/*agent_adapter.py
+rg -n "systemPromptOverride|Session ID:|BOOTSTRAP.md|OPENCLAW_RL_AGENT_|openclaw-rl-rollout" mlf/agent_gpu_bootstrap openclaw-rl || true
+bash -n mlf/agent_gpu_bootstrap/*.sh mlf/run_herms/*.sh
+```
+
+For a smoke rollout, inspect:
+
+- `trace.jsonl`
+- `proxy_record.jsonl`
+- backend stdout/stderr
+- generated backend config
+- one effective prompt captured by the proxy
+- materialized `agent_workspace.env` and `mcp_runtime.env`
+
+If the effective prompt or tool surface does not match the target harness, stop
+and mark the data invalid before scaling the run.

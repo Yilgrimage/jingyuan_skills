@@ -47,12 +47,16 @@ require_dir_with_file() {
 
 require_no_stale_path() {
   local path=$1
-  local stale=${2:-/tmp/mlf-runtime}
+  local stale
+  local stale_paths=${2:-${SERVER_OPS_STALE_PATHS:-}}
   [ -e "${path}" ] || return 0
-  if grep -Rsl --exclude='._*' -- "${stale}" "${path}" >/dev/null 2>&1; then
-    echo "Stale local path ${stale} found under ${path}" >&2
-    return 1
-  fi
+  [ -n "${stale_paths}" ] || return 0
+  for stale in $(ops_list_items "${stale_paths}"); do
+    if grep -Rsl --exclude='._*' -- "${stale}" "${path}" >/dev/null 2>&1; then
+      echo "Stale local path ${stale} found under ${path}" >&2
+      return 1
+    fi
+  done
 }
 
 alfworld_has_paired_game() {
@@ -233,7 +237,7 @@ validate_mcp_server_data() {
   for required_file in $(ops_list_items "${MCP_SERVER_REQUIRED_FILES:-none}"); do
     require_file "${data_dir}/${required_file}" || return 1
   done
-  require_no_stale_path "${data_dir}" "${MCP_SERVER_STALE_PATH:-/tmp/mlf-runtime}" || return 1
+  require_no_stale_path "${data_dir}" "${MCP_SERVER_STALE_PATHS:-${SERVER_OPS_STALE_PATHS:-}}" || return 1
 }
 
 validate_dataset() {
