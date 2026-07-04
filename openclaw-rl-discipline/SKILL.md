@@ -240,6 +240,27 @@ agent adapter. Validate auth by smoke-testing the actual PSMs used by the data;
 do not infer support from hard-coded PSM allowlists. Authorization failures for
 a PSM are not model behavior.
 
+For `bytedance.mcp.gne_agent_tool`, keep the layers exact:
+
+- Business wrappers such as `archive-query`, `ccr-query`, and
+  `traffic-control-query` pass the numeric GNE `tool_code` as
+  `mcp_tool_call.py --tool_name <tool_code>` plus raw JSON business params.
+  They must not pass `--tool_name eval_mcp_tool` or build an
+  `eval_mcp_tool` envelope; the shared `mcp_tool_call.py` already wraps GNE
+  calls internally.
+- GNE calls require a real user identity. Set `FIRE_USER_NAME=<sso>` or
+  `GNE_TOOL_USER=<sso>` in the backend process, or pass `--user-id <sso>`.
+  Wrappers should fail fast instead of falling back to the literal `fire` in
+  formal rollout/training.
+- Validate `stdio` and `psm` separately. On the H100 ecomcommonnas runtime,
+  GNE `stdio` can fail during proxy PSM init with 403, while `--transport psm`
+  with `SERVICE_ACCOUNT_SECRET_KEY` and user identity succeeds. Do not let
+  `auto` hide this during debugging.
+- Before scaling rollout, query GNE tool details with `--transport psm
+  --tool_list --tool_name <tool_code>[,<tool_code>...]`. If this returns
+  `query tool detail cache failed`, treat that specific tool code as currently
+  unavailable and stop the batch.
+
 Expected node-local restore order:
 
 ```bash
