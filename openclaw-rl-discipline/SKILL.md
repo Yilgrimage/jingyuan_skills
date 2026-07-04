@@ -86,6 +86,16 @@ debug-only approximation and must require an explicit mode such as
 for formal training/evaluation, and do not hide unsupported tools by adding
 prompt-written schemas.
 
+When `chat_compat` is used, Codex itself is still speaking Responses API to the
+local adapter; the adapter translates a supported subset to a chat-completions
+policy server such as SGLang. This can validate runtime, skills, MCP calls, and
+tool parser behavior, but it is not a native Codex harness. Treat missing
+Responses-only tools, such as built-in `web_search`, as an explicit run policy
+if the experiment wants to force business-skill/MCP data access. The remaining
+TODO for formal Codex rollouts is a Responses-compatible policy proxy that
+preserves Codex's tool surface while still recording the trace/logprob data
+needed by OpenClaw-RL.
+
 Use `HARNESS_*` as the external adapter control namespace. Shared knobs use
 `HARNESS_BACKEND`, `HARNESS_SESSION_ID`, `HARNESS_ADAPTER_BASE_URL`, and
 `HARNESS_AGENT_MODEL`; backend-specific knobs use `HARNESS_OPENCLAW_*` or
