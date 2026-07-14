@@ -240,7 +240,14 @@ import datetime as dt
 import json
 import os
 
-for key in ("SERVICE_ACCOUNT_SECRET_KEY", "ZTI_TOKEN", "STUDIO_COOKIE", "MCP_GATEWAY_REGION"):
+for key in (
+    "SERVICE_ACCOUNT_SECRET_KEY",
+    "ZTI_TOKEN",
+    "STUDIO_COOKIE",
+    "MCP_GATEWAY_REGION",
+    "FIRE_USER_NAME",
+    "GNE_TOOL_USER",
+):
     value = os.environ.get(key, "")
     print(f"{key}=set:{bool(value)} len:{len(value)}")
 

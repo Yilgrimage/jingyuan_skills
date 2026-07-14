@@ -283,6 +283,14 @@ tool child processes so stale packages under `/home/*/.local` cannot shadow the
 MCP runtime and cause errors such as `bytedenv` missing
 `get_current_vregion`.
 
+The shared `mcp_tools_usage/scripts/mcp_tool_call.py` runner must also resolve
+stdio MCP executables from the materialized runtime env. In particular, it
+should prepend `AGENT_MCP_NODE_BIN_DIR` / `HARNESS_AGENT_NODE_BIN_DIR` and
+`AGENT_MCP_PYTHON_BIN_DIR` / `HARNESS_AGENT_PYTHON_BIN_DIR` to the child env
+and resolve `npx` with that PATH before starting `@byted/mcp-proxy`. If a new
+node reports `FileNotFoundError: npx`, fix the runner/materialized MCP env or
+rebuild the MCP runtime pack; do not add ad hoc symlinks outside the pack.
+
 Do not let `mcp_runtime.env` choose the Python interpreter for OpenClaw-RL
 itself. Capture the training Python before sourcing MCP env files, for example
 `TRAIN_PYTHON=${TRAIN_PYTHON:-$(command -v python3)}`, and use that interpreter
@@ -294,6 +302,12 @@ Do not copy the full skills tree into every conversation. Materialize skills
 once per node and symlink them when the backend expects a workspace-local path.
 Do not pack session logs, temporary data, credentials, or historical scratch
 files into reusable runtime packs.
+Business skills packs should contain executable skill code, `SKILL.md`,
+references, schemas, and compact examples. Exclude historical run artifacts
+such as `raw/`, `batch_*`, `rerun_*`, `regression_*`, `verify_*`, logs,
+sessions, caches, and generated tool outputs. If a skill needs large reusable
+knowledge data, keep it under a deliberate reference/knowledge/assets path so
+it is distinguishable from experiment output.
 
 OpenClaw should see skills through its native config and skill loader:
 `agents.*.skills` selects enabled skill names, the workspace points at the

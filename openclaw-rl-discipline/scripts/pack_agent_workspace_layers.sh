@@ -86,38 +86,21 @@ write_sha_revision() {
   } > "${pack%.tar.gz}.revision"
 }
 
-mkdir -p "${tmp}/skills" "${tmp}/persona"
-
-rsync -a --delete \
-  --exclude '.git/' \
-  --exclude '.env' \
-  --exclude '*.env' \
-  --exclude 'outputs/' \
-  --exclude 'log/' \
-  --exclude 'logs/' \
-  --exclude 'sessions/' \
-  --exclude 'sessions_*.zip' \
-  --exclude 'session_*.zip' \
-  --exclude '*.zip' \
-  --exclude '*.tar' \
-  --exclude '*.tar.gz' \
-  --exclude '__pycache__/' \
-  --exclude '.pytest_cache/' \
-  --exclude '.DS_Store' \
-  "${SOURCE_DIR}/skills/" "${tmp}/skills/"
+mkdir -p "${tmp}/persona"
 
 copy_persona_file AGENTS.md AGENTS.md agents.md
 copy_persona_file SOUL.md SOUL.md soul.md
 copy_persona_file IDENTITY.md IDENTITY.md identity.md
 
-TARGET="${tmp}" python3 - <<'PY'
+SOURCE_DIR="${SOURCE_DIR}" TARGET="${tmp}" python3 - <<'PY'
 import json
 import os
 import sys
 from pathlib import Path
 
+source = Path(os.environ["SOURCE_DIR"])
 root = Path(os.environ["TARGET"])
-skills = root / "skills"
+skills = source / "skills"
 skill_count = len(list(skills.rglob("SKILL.md")))
 if skill_count == 0:
     print("No SKILL.md found in skills pack", file=sys.stderr)
@@ -148,7 +131,33 @@ print(f"MCP_STDIO_CONFIGS={len(configured)}")
 print(f"AGENTS_CHARS={len((root / 'persona' / 'AGENTS.md').read_text(encoding='utf-8'))}")
 PY
 
-tar -C "${tmp}" -czf "${SKILLS_PACK}" skills
+tmp_skills_pack="$(mktemp "${SKILLS_PACK}.XXXXXX")"
+tar -C "${SOURCE_DIR}" \
+  --exclude 'skills/.git' \
+  --exclude 'skills/**/.git' \
+  --exclude 'skills/.env' \
+  --exclude 'skills/**/*.env' \
+  --exclude 'skills/**/outputs' \
+  --exclude 'skills/**/raw' \
+  --exclude 'skills/**/batch_*' \
+  --exclude 'skills/**/rerun_*' \
+  --exclude 'skills/**/regression_*' \
+  --exclude 'skills/**/verify_*' \
+  --exclude 'skills/**/neutral_recheck_*' \
+  --exclude 'skills/**/oec_*_output*' \
+  --exclude 'skills/**/log' \
+  --exclude 'skills/**/logs' \
+  --exclude 'skills/**/sessions' \
+  --exclude 'skills/**/sessions_*.zip' \
+  --exclude 'skills/**/session_*.zip' \
+  --exclude 'skills/**/*.zip' \
+  --exclude 'skills/**/*.tar' \
+  --exclude 'skills/**/*.tar.gz' \
+  --exclude 'skills/**/__pycache__' \
+  --exclude 'skills/**/.pytest_cache' \
+  --exclude 'skills/**/.DS_Store' \
+  -czf "${tmp_skills_pack}" skills
+mv "${tmp_skills_pack}" "${SKILLS_PACK}"
 tar -C "${tmp}" -czf "${PERSONA_PACK}" persona
 
 write_sha_revision "${SKILLS_PACK}" agent-business-skills
