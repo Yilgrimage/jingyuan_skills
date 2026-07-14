@@ -143,11 +143,16 @@ commit concrete cluster paths in training repo configs.
 - Keep task source mirrors only when the env itself needs a checkout, for
   example WebShop. Source mirrors are not a replacement for Python runtime
   dependencies.
+- `prepare_node_runtime.sh --envs ...` may materialize generic runtime packs,
+  not only conda packs. Codex runtime, agent skills, persona files, and MCP
+  helper packs are valid env-pack names even when they do not contain
+  `bin/conda-unpack`. Materializers should run `conda-unpack` only when the
+  extracted target provides it.
 - Publish immutable pack artifacts to `${ROOT_DIR}/packs/<name>.tar.gz` plus
   `.sha256` and `.revision`; materialize them with `--force` when replacing a
   node-local env.
-- Validate a pack before use: check hashes, run `conda-unpack`, import critical
-  modules, and run an env-specific smoke test.
+- Validate a pack before use: check hashes, run `conda-unpack` for conda packs,
+  import critical modules where applicable, and run an env-specific smoke test.
 - Do not run Python directly from a NAS env directory. Use node-local extracted
   packs to avoid slow small-file IO and stale absolute prefixes.
 
@@ -162,6 +167,11 @@ commit concrete cluster paths in training repo configs.
   Do not rely on outer-shell exports reaching Ray actors.
 - After resource reset: update node file, materialize runtime/data, start
   watchdog/bench, then launch jobs.
+- Preserve the difference between an unset variable and an explicitly empty
+  variable in launch scripts. Use `[[ -z "${VAR+x}" ]]` before applying a
+  default when empty has meaning, for example `WORKER_HOSTS=''` for a
+  single-node launch. Do not use `${VAR:-default}` for these fields; it can
+  silently reintroduce stale worker nodes.
 - Before launching training, stop bench on selected nodes. If training fails and
   GPUs idle, watchdog should restart bench by utilization threshold.
 - `bench_on_exit` must call `${ROOT_DIR}/scripts/run_bench.sh`; do not embed a
@@ -181,6 +191,12 @@ commit concrete cluster paths in training repo configs.
   `ssh -N -T -R 127.0.0.1:<node_port>:127.0.0.1:<local_proxy_port> ...`.
   Validate from the node with `/health` and a minimal chat/tool-call request
   before using it in a rollout.
+- For repeated large-model startup, prefer a node-local model cache. Reading
+  directly from NAS is acceptable for quick smoke tests, but repeated SGLang or
+  actor loads should copy to a disposable local path first. If a single-node
+  cache copy is slow, use file-level parallelism such as
+  `CACHE_MODEL_FILE_PARALLELISM`; this is a cache-performance knob and must not
+  change training semantics.
 
 ## GPU Keepalive
 

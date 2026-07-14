@@ -77,6 +77,28 @@ For `HARNESS_BACKEND=codex`, Codex-specific code should stay in the
 Codex adapter: isolated `CODEX_HOME`, Codex CLI invocation, and any protocol
 translation needed to reach the policy proxy.
 
+Use Codex's official provider/config interface for local policy models. The
+adapter should write an isolated `config.toml` with `model_provider`,
+`[model_providers.<id>]`, `base_url`, `wire_api`, `model_context_window`,
+`model_auto_compact_token_limit`, `tool_output_token_limit`, and
+`model_catalog_json`. Do not write or copy `models_cache.json` as a fallback.
+If Codex reports `Model metadata for ... not found` or
+`failed to load models cache`, the run is invalid and must fail fast.
+
+For SGLang/OpenClaw-RL policy serving, keep these concepts separate:
+
+- `model` in Codex config: the model slug Codex uses to select prompt/tool
+  metadata from the explicit `model_catalog_json`.
+- provider `base_url`: the local policy proxy or Responses bridge endpoint.
+- served model inside the proxy: the actual SGLang/vLLM model used for token
+  generation and logprob collection.
+
+The explicit catalog source should be a durable runtime source, for example
+`${ROOT_DIR}/runtime_sources/codex/model_catalog_base.json`, and the adapter
+may derive a per-run `model_catalog.json` from it by changing only the local
+policy slug and run limits. Missing catalog source, invalid schema, or metadata
+fallback is a setup error. It is not sample/model behavior.
+
 Codex uses the Responses API and can expose tools that chat-completions servers
 cannot represent. The default Codex bridge should be Responses pass-through:
 Codex talks to `/v1/responses`, and the middle layer only adds non-model-visible
@@ -103,21 +125,40 @@ Use `HARNESS_*` as the external adapter control namespace. Shared knobs use
 fallbacks. `OPENCLAW_QA_*` belongs to BatchQA scheduling/proxy internals, not
 backend prompt or runtime mutation.
 
+For a single-node OpenClaw-RL smoke launch, preserve an explicitly empty
+worker list: `WORKER_HOSTS=''` and `CLUSTER_NUM_NODES=1` must not be replaced
+by any launcher default. For Qwen3.6-27B on a single 8-GPU B200 node, use a
+valid topology such as actor 4 GPUs plus rollout 4 GPUs with TP=4. TP=8 is
+invalid for this model family because its `num_query_groups` is 4.
+
 ## Tool Call Parser Validation
 
 For Qwen/Qwen-Coder style models, raw XML-like assistant text such as
 `<tool_call><function=...>` is a parser failure unless the OpenAI-compatible
 response contains structured `message.tool_calls`.
 
-Before trusting rollouts that require tools:
+Before trusting rollouts that require tools, run a preflight instead of letting
+training code discover parser/auth failures sample by sample:
+
+```bash
+python mlf/agent_gpu_bootstrap/agent_runtime_preflight.py \
+  --policy-base-url "http://127.0.0.1:${SGLANG_ROUTER_PORT:-30012}/v1" \
+  --model "${SERVED_MODEL_NAME:-harness-policy}" \
+  --mcp-psms "bytedance.mcp.machine_ipr,bytedance.mcp.thunder_server" \
+  --output "${RUN_DIR:-/tmp}/agent_runtime_preflight.json"
+```
+
+The preflight is a run-level gate. If it fails, do not start rollout/training.
+Fix the runtime, parser, model endpoint, MCP credentials, or selected PSMs
+first. Do not convert parser/auth failures into sample-level `aborted` rules.
+
+For policy endpoint parser validation, the preflight must:
 
 - Run a forced tool-call smoke against the exact SGLang launch command.
-- Inspect `proxy_record.jsonl` or bridge debug: `finish_reason=tool_calls`
-  must have `has_tool_calls=true` and non-empty `tool_calls`.
+- Require the OpenAI-compatible response to contain structured
+  `message.tool_calls` with the requested function name.
 - Treat `finish_reason=tool_calls` with `message.tool_calls=null` as broken,
   even if the assistant content contains a plausible XML tool call.
-- Confirm the backend actually executed the tool and received tool output in
-  the trace.
 - Verify the effective SGLang parser from logs and responses, not only from
   the launch flag. `qwen`, `qwen25`, and `qwen3_coder` are not interchangeable,
   and auto-detection can override expectations.
@@ -133,6 +174,39 @@ Before trusting rollouts that require tools:
 - Do not patch the adapter to execute content-only XML unless that exact
   behavior exists in the production/eval harness.
 
+After parser/auth preflight passes, still run a small real backend smoke before
+scaling. Inspect `proxy_record.jsonl` and `trace.jsonl` to confirm the backend
+actually executed tools and received tool outputs. The fixed preflight guards
+run-level parser/auth failures; the backend smoke guards harness wiring.
+
+For MCP auth validation, smoke-test the actual PSMs used by the selected data
+before rollout. Treat global auth failures as run-invalid, not model behavior.
+Examples include `401 Unauthorized`, `empty jwt`, `invalid jwt`, or broad
+`not allowed to access mcp server` failures across required PSMs. A single
+business tool returning empty data, a specific GNE tool-code cache error, or a
+model choosing a bad tool path is a sample/model outcome and should be left to
+reward/evaluation.
+
+Sample-level `aborted` should stay narrow: use it only when a training sample
+cannot be constructed, for example no policy trace, no `response_ids`, no
+loss-bearing tokens, or a harness timeout that kills the process before a
+complete trace is available. Missing final answers with valid policy trace are
+trainable negative examples, not hard aborts.
+
+If an older exported rollout used the broad `aborted` convention, do not rerun
+the model just to fix status labels. Reclassify the exported artifacts:
+
+```bash
+python mlf/run_herms/reclassify_student_rollout_status.py \
+  --input-root /path/to/old_rollout_root \
+  --output-root /path/to/old_rollout_root_reclassified_YYYYMMDD
+```
+
+The script rewrites `student_rollouts.jsonl`, `trace.jsonl`, and
+`student_teacher_format.jsonl`, while symlinking large unchanged artifacts such
+as `proxy_record.jsonl`. It turns missing-final samples with valid policy trace
+into `failed + remove_sample=false`.
+
 ## Runtime And Skills
 
 Keep runtime layers separate:
@@ -146,7 +220,9 @@ Use split packs:
 
 - `agent-business-skills.tar.gz`: business skills only.
 - `agent-persona.tar.gz`: `AGENTS.md`, `SOUL.md`, and `IDENTITY.md`.
-- `mcp-runtime-py312-agent-mcp.tar.gz`: Python/Node MCP runtime.
+- `mcp-runtime-<py>-agent-mcp*.tar.gz`: Python/Node MCP runtime. Build it on
+  the target image family; a Python pack built against a newer glibc can fail
+  on another cluster even when the Python version matches.
 - backend runtime packs such as `openclaw-rl-openclaw-runtime.tar.gz`,
   `openclaw-rl-hermes-runtime.tar.gz`, `openclaw-rl-deerflow-runtime.tar.gz`,
   and `codex-runtime-*.tar.gz`.
@@ -240,23 +316,67 @@ agent adapter. Validate auth by smoke-testing the actual PSMs used by the data;
 do not infer support from hard-coded PSM allowlists. Authorization failures for
 a PSM are not model behavior.
 
+When restoring a new node, materialize the split packs before launching Codex
+or OpenClaw runs: backend runtime, `agent-business-skills`, `agent-persona`,
+and an MCP runtime pack compatible with the node image, for example
+`mcp-runtime-py311-agent-mcp-bookworm` on Debian 12/B200 or
+`mcp-runtime-py312-agent-mcp` on newer Ubuntu images. Generic packs are not
+necessarily conda envs. The server-ops materializer should unpack and stamp
+them without assuming `bin/conda-unpack` exists. Verify `codex --version`, the
+materialized skill count, MCP Python/Node paths, and the selected persona before
+the first rollout.
+
+When limiting MCP pressure during rollout, set `MCP_GLOBAL_QPS` or
+`MCP_RATE_LIMIT_QPS` for the backend child-process environment. The shared
+`mcp_tools_usage/scripts/mcp_tool_call.py` runner enforces this per node through
+a node-local file lock under `${MCP_RATE_LIMIT_DIR:-/tmp/server-ops-runtime/mcp/rate_limit}`.
+This protects calls that go through the shared runner, including Thunder,
+Machine IPR, and GNE wrappers that resolve `MCP_TOOL_CALL_PY`; it does not
+throttle arbitrary direct `curl`, direct SDK, browser, Lark, or web-search
+traffic.
+
+For live observability, the runner always emits best-effort UDP metrics to
+`${MCP_METRICS_UDP_HOST:-127.0.0.1}:${MCP_METRICS_UDP_PORT:-18091}` when QPS
+limiting is enabled. If no process is listening, the packets are dropped and no
+state is retained. Start the optional read-only metrics server when needed; it
+keeps only an in-memory recent window and exposes it over HTTP:
+
+```bash
+python "$HARNESS_AGENT_SKILL_DIRS/mcp_tools_usage/scripts/mcp_rate_limit_metrics.py" \
+  --host 127.0.0.1 \
+  --port "${MCP_METRICS_PORT:-18090}" \
+  --udp-port "${MCP_METRICS_UDP_PORT:-18091}" \
+  --rate-limit-dir "${MCP_RATE_LIMIT_DIR:-/tmp/server-ops-runtime/mcp/rate_limit}"
+```
+
+Then read `http://127.0.0.1:${MCP_METRICS_PORT:-18090}/metrics`. The `windows`
+section reports rate-limiter queue wait only; it does not measure MCP service
+latency. Use `call_windows` for real MCP call duration, transport split, and
+stdio/psm errors. The runner does not open a TCP port by itself. File-based
+metrics under `MCP_RATE_LIMIT_DIR` are disabled by default; set
+`MCP_RATE_LIMIT_FILE_METRICS=1` only for explicit debug fallback. Live
+monitoring should use the UDP in-memory server.
+
 For `bytedance.mcp.gne_agent_tool`, keep the layers exact:
 
 - Business wrappers such as `archive-query`, `ccr-query`, and
-  `traffic-control-query` pass the numeric GNE `tool_code` as
-  `mcp_tool_call.py --tool_name <tool_code>` plus raw JSON business params.
-  They must not pass `--tool_name eval_mcp_tool` or build an
-  `eval_mcp_tool` envelope; the shared `mcp_tool_call.py` already wraps GNE
-  calls internally.
+  `traffic-control-query` are model-visible online Skill behavior. Keep them
+  aligned with the production Skill source, even when the wrapper is noisy or
+  falls back poorly. Do not patch these Skill wrappers just to improve rollout
+  quality.
+- Direct numeric `tool_code` calls through `mcp_tool_call.py` are a diagnostic
+  path only. Use them to isolate MCP authorization or downstream tool-cache
+  issues, but do not bake that bypass into the training Skill pack unless the
+  online runtime has made the same change.
 - GNE calls require a real user identity. Set `FIRE_USER_NAME=<sso>` or
   `GNE_TOOL_USER=<sso>` in the backend process, or pass `--user-id <sso>`.
-  Wrappers should fail fast instead of falling back to the literal `fire` in
-  formal rollout/training.
+  Missing identity can change GNE behavior; record it as a runtime condition
+  and compare against the online trace before treating it as a local bug.
 - Validate `stdio` and `psm` separately. On the H100 ecomcommonnas runtime,
-  GNE `stdio` can fail during proxy PSM init with 403, while `--transport psm`
-  with `SERVICE_ACCOUNT_SECRET_KEY` and user identity succeeds. Do not let
-  `auto` hide this during debugging.
-- Before scaling rollout, query GNE tool details with `--transport psm
+  GNE `stdio` can fail during proxy PSM init with 403, while `psm` fallback may
+  reach downstream tools. Do not let `auto` hide this during debugging.
+- Before scaling rollout, query GNE tool details diagnostically with
+  `--transport psm
   --tool_list --tool_name <tool_code>[,<tool_code>...]`. If this returns
   `query tool detail cache failed`, treat that specific tool code as currently
   unavailable and stop the batch.
@@ -288,6 +408,33 @@ Keep ROPD as a reward path, not rollout post-processing:
 - Record the answer mode, teacher source, student trace source, judge model,
   context compression, and retry policy in run artifacts.
 - Do not change the backend harness to make ROPD scoring easier.
+
+Current ROPD V0 uses GPT for rubric generation and Seed for judging. Do not
+silently use one Seed model for both phases. Before launching a GPU training
+run, start and verify the reward proxies from the submit/development host:
+
+```bash
+ROOT_DIR=/mnt/bn/ecomcommonnas/yanjingyuan \
+bash mlf/run_herms/start_ropd_reward_proxies.sh --restart
+```
+
+The script starts local proxies, exposes them to each node with SSH reverse
+tunnels, and checks `/health` from the nodes. Training nodes should then use:
+
+```text
+ROPD_RUBRIC_BASE_URL=http://127.0.0.1:39081/v1
+ROPD_JUDGE_BASE_URL=http://127.0.0.1:39082/api/v3
+```
+
+For strict verification set `ROPD_USE_LLM=1` and `ROPD_FALLBACK_HEURISTIC=0`.
+If the proxy or tunnel health check fails, stop before rollout; do not let the
+reward path fall back to heuristic scoring during a validation run.
+
+For GRPO/ROPD validation runs that need group-relative advantages, keep reward
+normalization enabled unless the experiment explicitly disables it. Ensure the
+launcher passes `DISABLE_REWARDS_NORMALIZATION=0` through its environment
+contract; missing this variable can silently revert to a different training
+behavior.
 
 ## Minimum Validation
 
