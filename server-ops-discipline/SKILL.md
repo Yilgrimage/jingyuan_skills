@@ -90,6 +90,8 @@ A100 jixf-nas-lq:
   ROOT_DIR=/mnt/bn/jixf-nas-lq/mlf
   MODEL_DIR=/mnt/bn/jixf-nas-lq/yanjingyuan_models
   RUNS_DIR=/mnt/bn/jixf-nas-lq/yanjingyuan_runs
+  SSH_PORT=10413
+  SSH_KEY=${ROOT_DIR}/secrets/byte_id_rsa
 ```
 
 These concrete paths are handoff aids, not portable config. Confirm the active
@@ -164,6 +166,14 @@ commit concrete cluster paths in training repo configs.
 
 - Maintain one current node file as the IP source of truth. Launch/topology
   profiles select nodes by index.
+- For an already-launched job, do not guess SSH options from memory or from
+  plain `ssh <node>`. Read that run's `logs/resolved_launch.env` and use its
+  `SSH_USER`, `SSH_PORT`, `SSH_KEY`, `SSH_IPV6`, `SSH_JUMP`, `NODES_FILE`,
+  `NODE_INDICES`, and `AUX_NODE_INDICES`. The resolved launch file is the
+  authoritative connection contract for that run.
+- On Trail/Merlin-style GPU nodes, default SSH may fail with GSSAPI/publickey
+  errors even when the node is healthy. Use the configured port/key from the
+  launch contract, for example `ssh -i "$SSH_KEY" -p "$SSH_PORT" "$SSH_USER@$host"`.
 - For multi-node GPU jobs, make the routable training network interface an
   explicit launch contract. Prefer `SOCKET_IFNAME=${MLP_SOCKET_IFNAME:-eth0}`
   or a cluster-specific override, then propagate `NCCL_SOCKET_IFNAME`,
