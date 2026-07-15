@@ -5,60 +5,23 @@ description: "Use when preparing remote GPU nodes, building or publishing runtim
 
 # Server Ops Discipline
 
-Keep server operations reproducible. Shared storage is the source of truth;
+Keep GPU-node operations reproducible. Shared storage is the source of truth;
 node-local disks are disposable caches rebuilt from packs and scripts.
 
-## Root And Scripts
+## Core Model
 
-- Confirm the cluster workspace root with the user before first use. Store it in
-  a local, non-git config:
-
-```bash
-server-ops-discipline/scripts/configure_root.sh /path/to/root
-```
-
-- Install reusable scripts under `${ROOT_DIR}/scripts`:
-
-```bash
-mkdir -p "${ROOT_DIR}/scripts"
-cp -a server-ops-discipline/scripts/. "${ROOT_DIR}/scripts/"
-chmod +x "${ROOT_DIR}/scripts/"*.sh
-```
-
-- Use `ROOT_DIR`, not project- or cluster-branded root variables. Do not commit
-  concrete root paths.
-- Stable interfaces:
-
-```text
-${ROOT_DIR}/scripts/run_bench.sh start|stop|status|restart [--nodes nodes.txt --node 0,1]
-${ROOT_DIR}/scripts/gpu_idle_watchdog.sh start|stop|status|restart
-${ROOT_DIR}/scripts/prepare_data.sh --data alfworld,webshop,tau2,appworld,mcp_server
-${ROOT_DIR}/scripts/pack_data.sh --data alfworld,webshop,tau2,appworld,mcp_server
-${ROOT_DIR}/scripts/build_wandb_env.sh
-${ROOT_DIR}/scripts/prepare_node_runtime.sh --local-only|--all-nodes ...
-${ROOT_DIR}/scripts/materialize_node_runtime.sh --envs ... --data ... --sources ...
-```
-
-Project launchers may call these scripts, but must not reimplement bench,
-watchdog, node materialization, SSH fanout, or root discovery.
-
-## State Model
-
-- Durable: code, packs, data, models, secrets, runs, and node files live under
-  `${ROOT_DIR}`.
-  If a cluster puts a smaller quota on the workspace tree, keep the same public
-  layout and make `${ROOT_DIR}/models` or `${ROOT_DIR}/runs` symlinks to the
-  real shared-storage locations.
-- Disposable: extracted envs, source mirrors, data mirrors, Ray temp state, and
-  service scratch live on node-local disks such as `/tmp`.
-- Ray session directories, object spilling, runtime-env caches, and service
-  temp files must use node-local scratch such as `${LOCAL_RUNTIME_DIR}`. Do not
-  place Ray temp or object spilling under `${ROOT_DIR}`, `${ROOT_DIR}/runs`, or
-  NAS-backed symlinks just to avoid local disk pressure.
-- Do not install packages during normal training startup. Build packs first,
-  then materialize them onto nodes.
-- Keep generated outputs, real node IP files, secrets, packs, data, models,
-  checkpoints, and run logs out of git.
+- `ROOT_DIR` is the portable workspace root. Confirm it with the user on a new
+  cluster and store it outside git with `scripts/configure_root.sh`.
+- Durable state lives under `ROOT_DIR`: code, packs, data, models, secrets,
+  node files, runs, checkpoints, and logs selected for long-term analysis.
+- Disposable state lives on node-local storage: extracted envs, copied data,
+  model/source caches, Ray scratch, runtime-env caches, service scratch, and
+  core/temp files.
+- If a cluster has separate quotas, keep public names stable and use symlinks
+  such as `${ROOT_DIR}/models` or `${ROOT_DIR}/runs` behind the scenes. Do not
+  add cluster-specific artifact roots to training repos.
+- Normal training startup must not install packages. Build packs first, then
+  materialize them onto nodes.
 
 Recommended layout:
 
@@ -74,156 +37,116 @@ ${LOCAL_ENVS_DIR:-/tmp/server-ops-envs}
 ${LOCAL_RUNTIME_DIR:-/tmp/server-ops-runtime}
 ```
 
-Known cluster roots for operator lookup:
+## Shared Scripts
 
-```text
-H100 ecomcommonnas:
-  ROOT_DIR=/mnt/bn/ecomcommonnas/yanjingyuan
-  CODE_DIR=/mnt/bn/ecomcommonnas/yanjingyuan/Code
-  PACK_DIR=/mnt/bn/ecomcommonnas/yanjingyuan/packs
-  SECRETS_DIR=/mnt/bn/ecomcommonnas/yanjingyuan/secrets
-  NODE_FILE=/mnt/bn/ecomcommonnas/yanjingyuan/scripts/ip.txt
-  MODEL_DIR=/mnt/bn/ecomcommonnas/mlf/models
-  SSH_PORT=10413
+Install reusable scripts under `${ROOT_DIR}/scripts` and call them from
+project launchers instead of reimplementing server ops:
 
-A100 jixf-nas-lq:
-  ROOT_DIR=/mnt/bn/jixf-nas-lq/mlf
-  MODEL_DIR=/mnt/bn/jixf-nas-lq/yanjingyuan_models
-  RUNS_DIR=/mnt/bn/jixf-nas-lq/yanjingyuan_runs
-  SSH_PORT=10413
-  SSH_KEY=${ROOT_DIR}/secrets/byte_id_rsa
+```bash
+mkdir -p "${ROOT_DIR}/scripts"
+cp -a server-ops-discipline/scripts/. "${ROOT_DIR}/scripts/"
+chmod +x "${ROOT_DIR}/scripts/"*.sh
 ```
 
-These concrete paths are handoff aids, not portable config. Confirm the active
-cluster root and node file before launch. When a cluster has separate quota or
-performance tiers, keep the public layout stable and place symlinks behind
-`${ROOT_DIR}/models`, `${ROOT_DIR}/runs`, or other top-level names. Do not
-commit concrete cluster paths in training repo configs.
+Stable entrypoints:
 
+```text
+run_bench.sh start|stop|status|restart [--nodes nodes.txt --node 0,1]
+gpu_idle_watchdog.sh start|stop|status|restart
+prepare_data.sh --data <env>
+pack_data.sh --data <env>
+build_wandb_env.sh
+prepare_node_runtime.sh --local-only|--all-nodes ...
+materialize_node_runtime.sh --envs ... --data ... --sources ...
+```
 
-## Runtime Packs
+Project code may call these scripts, but should not duplicate bench, watchdog,
+node materialization, SSH fanout, or root discovery logic.
 
-- Prefer image-provided foundation training stacks when the image is complete
-  and compatible.
-- If the image is not complete, use one complete conda pack per foundation
-  stack. For Slime, the pack must include Slime, SGLang/vLLM/Torch dependencies
-  needed by that stack, and bundled Megatron source at `src/Megatron-LM`.
-- Do not materialize Megatron-LM as a standalone source mirror for Slime
-  training. It is part of the Slime runtime, not a separate runtime component.
-- Keep task envs separate: ALFWorld, WebShop, tau2, AppWorld, MCP servers, and
-  other env dependencies get their own packs.
-- Keep task data separate from env packs. Data preparation is a shared-storage
-  phase: run `prepare_data.sh --data ...` to download or construct
-  `${ROOT_DIR}/data/<name>`, then `pack_data.sh --data ...` to write immutable
-  `${ROOT_DIR}/packs/<name>-data.tar.gz` artifacts. Node materialization never
-  downloads data; it only unpacks a data pack or copies an already prepared
-  `${ROOT_DIR}/data/<name>` directory.
+## Packs And Data
+
+- Prefer a complete training image when available. Otherwise use one complete
+  conda pack per foundation stack. A Slime pack must include Slime, training
+  dependencies, and bundled Megatron source at `src/Megatron-LM`.
+- Keep task envs separate from foundation runtimes. ALFWorld, WebShop, tau2,
+  AppWorld, OpenClaw, and future envs get their own env/data packs as needed.
+- Keep task data separate from env packs. Prepare data on shared storage,
+  publish immutable `${ROOT_DIR}/packs/<name>-data.tar.gz` artifacts, and let
+  node materialization only unpack/copy validated data.
 - Data packs must contain every file an env server can need on any selected
-  node. For tau2, `prepare_data.sh --data tau2` must produce both raw
-  official/AReaL data and portable generated AReaL task/prompt files; training
-  launch should not generate node-local tau2 task files.
-- AppWorld data packs must include official datasets, base DBs, and task specs
-  under `${ROOT_DIR}/data/appworld/data`. `prepare_data.sh --data appworld`
-  may download through the AppWorld CLI when the AppWorld env is available, or
-  copy an existing portable tree from `APPWORLD_DATA_SOURCE_DIR`.
-- Private MCP server datasets may come from another NAS checkout rather than a
-  public downloader. Treat that checkout as an input source only: copy the
-  required JSON/JSONL task files and referenced assets into
-  `${ROOT_DIR}/data/mcp_server`, pack them as `mcp_server-data.tar.gz`, and have
-  training read the materialized `${AGENT_ENV_DATA_DIR}` copy. Set
-  `MCP_SERVER_REQUIRED_FILES` during preparation/packing for task-family
-  specific files that must exist, for example an IPR product-check task JSONL.
-- Validate task data before packing and after materialization. Domain-specific
-  datasets should fail fast on missing required files; for example ALFWorld
-  needs paired `game.tw-pddl`/`traj_data.json` files plus `logic/alfred.pddl`
-  and `logic/alfred.twl2`. Use `--validate-data-load` when bringing up a new
-  cluster to run supported env load smoke tests.
-- Keep optional reporting clients isolated. Build W&B with
-  `${ROOT_DIR}/scripts/build_wandb_env.sh`, publish
-  `${ROOT_DIR}/packs/wandb.tar.gz`, and materialize it like any other env pack.
-  Training repos must not use W&B from the foundation runtime, image Python,
-  system Python, or user-site packages.
-- Formal training runs must enable W&B and use the materialized `wandb` pack.
-  `ENABLE_WANDB=0` is acceptable only for smoke tests, launch validation, or
-  other short debugging runs where missing experiment curves are intentional.
-- Keep task source mirrors only when the env itself needs a checkout, for
-  example WebShop. Source mirrors are not a replacement for Python runtime
-  dependencies.
-- `prepare_node_runtime.sh --envs ...` may materialize generic runtime packs,
-  not only conda packs. Codex runtime, agent skills, persona files, and MCP
-  helper packs are valid env-pack names even when they do not contain
-  `bin/conda-unpack`. Materializers should run `conda-unpack` only when the
-  extracted target provides it.
-- Publish immutable pack artifacts to `${ROOT_DIR}/packs/<name>.tar.gz` plus
-  `.sha256` and `.revision`; materialize them with `--force` when replacing a
-  node-local env.
-- Validate a pack before use: check hashes, run `conda-unpack` for conda packs,
-  import critical modules where applicable, and run an env-specific smoke test.
-- Do not run Python directly from a NAS env directory. Use node-local extracted
+  node. Domain-specific validators should fail fast before training launch.
+- W&B is a separate optional runtime pack. Formal runs must enable W&B through
+  the materialized `wandb` pack; `ENABLE_WANDB=0` is only for smoke/debug runs.
+- Some materialized packs are not conda envs, for example Codex runtime,
+  skills, or helper bundles. Run `conda-unpack` only when the target provides
+  it.
+- Do not run Python directly from NAS env directories. Use node-local extracted
   packs to avoid slow small-file IO and stale absolute prefixes.
 
-## Node And Launch
+## Nodes And SSH
 
-- Maintain one current node file as the IP source of truth. Launch/topology
-  profiles select nodes by index.
-- For an already-launched job, do not guess SSH options from memory or from
-  plain `ssh <node>`. Read that run's `logs/resolved_launch.env` and use its
-  `SSH_USER`, `SSH_PORT`, `SSH_KEY`, `SSH_IPV6`, `SSH_JUMP`, `NODES_FILE`,
-  `NODE_INDICES`, and `AUX_NODE_INDICES`. The resolved launch file is the
-  authoritative connection contract for that run.
-- On Trail/Merlin-style GPU nodes, default SSH may fail with GSSAPI/publickey
-  errors even when the node is healthy. Use the configured port/key from the
-  launch contract, for example `ssh -i "$SSH_KEY" -p "$SSH_PORT" "$SSH_USER@$host"`.
-- For multi-node GPU jobs, make the routable training network interface an
-  explicit launch contract. Prefer `SOCKET_IFNAME=${MLP_SOCKET_IFNAME:-eth0}`
-  or a cluster-specific override, then propagate `NCCL_SOCKET_IFNAME`,
-  `GLOO_SOCKET_IFNAME`, and `TP_SOCKET_IFNAME` into Ray actor runtime envs.
-  Do not rely on outer-shell exports reaching Ray actors.
-- If a launcher chooses to override Ray's default `/tmp/ray`, it must do so at
-  Ray daemon startup: create a node-local `RAY_TEMP_DIR` on every selected node
-  and pass it to both head and worker `ray start --temp-dir`. A train adapter
-  variable or Python CLI flag that Slime parses later does not constrain an
-  already-started Ray cluster. Leaving Ray at default `/tmp/ray` is acceptable
-  when that directory is node-local, monitored, and cleaned between runs.
-- Launchers that reset Ray on selected training nodes should clean stale
-  `/tmp/ray/session_*` and `session_latest` after `ray stop --force` only when
-  no Ray daemon processes remain for the current user. Never blindly delete an
-  active Ray session or clean aux/foreign nodes outside the selected launch
-  contract.
+- Maintain one current node file as the IP source of truth. Topology profiles
+  select nodes by index.
+- For an already-launched run, do not guess SSH options. Read
+  `logs/resolved_launch.env` and use its `SSH_USER`, `SSH_PORT`, `SSH_KEY`,
+  `SSH_IPV6`, `SSH_JUMP`, `NODES_FILE`, `NODE_INDICES`, and
+  `AUX_NODE_INDICES`.
+- Plain `ssh <node>` may fail on Trail/Merlin-style GPU nodes even when the
+  node is healthy. Use the resolved launch contract, for example:
+  `ssh -i "$SSH_KEY" -p "$SSH_PORT" "$SSH_USER@$host"`.
+- For multi-node jobs, set the routable network interface explicitly and
+  propagate `NCCL_SOCKET_IFNAME`, `GLOO_SOCKET_IFNAME`, and
+  `TP_SOCKET_IFNAME` into Ray actor runtime envs. Outer-shell exports are not
+  enough.
+- Preserve unset-vs-empty semantics in launch scripts. Use
+  `[[ -z "${VAR+x}" ]]` before applying defaults when empty has meaning, such
+  as `WORKER_HOSTS=''` for a single-node launch.
+
+Cluster path hints are handoff aids only; confirm before use:
+
+```text
+H100 ecomcommonnas: ROOT_DIR=/mnt/bn/ecomcommonnas/yanjingyuan, SSH_PORT=10413
+A100 jixf-nas-lq:  ROOT_DIR=/mnt/bn/jixf-nas-lq/mlf, SSH_PORT=10413,
+                   SSH_KEY=${ROOT_DIR}/secrets/byte_id_rsa
+```
+
+## Launch Hygiene
+
 - After resource reset: update node file, materialize runtime/data, start
-  watchdog/bench, then launch jobs.
-- Preserve the difference between an unset variable and an explicitly empty
-  variable in launch scripts. Use `[[ -z "${VAR+x}" ]]` before applying a
-  default when empty has meaning, for example `WORKER_HOSTS=''` for a
-  single-node launch. Do not use `${VAR:-default}` for these fields; it can
-  silently reintroduce stale worker nodes.
-- Before launching training, stop bench on selected nodes. If training fails and
-  GPUs idle, watchdog should restart bench by utilization threshold.
+  watchdog or bench, then launch jobs.
+- Before launching training, stop bench on selected nodes. If training exits
+  and GPUs become idle, watchdog should restart bench by utilization threshold.
 - `bench_on_exit` must call `${ROOT_DIR}/scripts/run_bench.sh`; do not embed a
-  separate keepalive implementation in training repos.
-- Reset experiments by stopping only selected train/Ray/env processes. Do not
-  kill unrelated user processes.
-- Avoid `pkill -f <pattern>` in SSH one-liners. The pattern can match the
-  remote shell command itself and kill the active SSH session before cleanup
-  finishes. Prefer stopping a named tmux session, or list PIDs first with
-  `pgrep -af`, filter out the current shell/grep/ssh command, then kill exact
-  PIDs.
-- Ark/Seed CN endpoints may be reachable from the development machine but fail
-  from GPU training nodes with TLS EOF or connection timeout. Treat this as a
-  network path issue, not a Python dependency or harness bug. When local access
-  works, run a small OpenAI-compatible proxy on the development machine and
-  expose it to the node with SSH reverse forwarding, for example:
-  `ssh -N -T -R 127.0.0.1:<node_port>:127.0.0.1:<local_proxy_port> ...`.
-  Validate from the node with `/health` and a minimal chat/tool-call request
-  before using it in a rollout.
-- For repeated large-model startup, prefer a node-local model cache. Reading
-  directly from NAS is acceptable for quick smoke tests, but repeated SGLang or
-  actor loads should copy to a disposable local path first. If a single-node
-  cache copy is slow, use file-level parallelism such as
-  `CACHE_MODEL_FILE_PARALLELISM`; this is a cache-performance knob and must not
-  change training semantics.
+  second keepalive implementation in training repos.
+- Reset only selected train/Ray/env processes. Do not kill unrelated user
+  processes.
+- Avoid `pkill -f <pattern>` in SSH one-liners; it can match and kill the SSH
+  command itself. Prefer named tmux sessions or exact PID filtering.
+- For repeated large-model startup, prefer a node-local model cache. NAS reads
+  are acceptable for smoke tests, but repeated SGLang/actor loads should use a
+  disposable local cache.
 
-## GPU Keepalive
+## Ray And Local Scratch
+
+- `/tmp/ray` and `${LOCAL_RUNTIME_DIR}/ray` are scratch, not durable records.
+  Durable evidence belongs in run logs, resolved configs, W&B, dumps, eval
+  summaries, and checkpoints.
+- Leaving Ray at default `/tmp/ray` is acceptable when it is node-local,
+  monitored, and cleaned between launches.
+- If overriding Ray temp, do it at daemon startup with `ray start --temp-dir`
+  on both head and worker nodes. A train adapter variable or Python CLI flag
+  parsed after Ray starts does not move Ray session directories.
+- Launchers that reset Ray may clean stale `/tmp/ray/session_*` and
+  `session_latest` after `ray stop --force`, but only after confirming no Ray
+  daemon processes remain for the current user.
+- Do not route Ray temp, object spilling, runtime-env cache, or high-churn
+  service scratch to NAS as a first response. Fix the writer or clean local
+  scratch instead.
+- If node disk grows, inspect `/tmp/ray`, Ray logs, object spilling,
+  runtime-env cache, core files, and debug dumps before changing training
+  semantics.
+
+## Keepalive
 
 - Watchdog protects idle GPUs by utilization only. It should not special-case
   Slime, Ray, tmux names, or process names.
@@ -231,33 +154,14 @@ commit concrete cluster paths in training repo configs.
   unrelated tmux sessions or user processes.
 - Keep watchdog and bench independent of training framework state.
 
-## Local Disk Pressure
+## Debug Order
 
-- When node disk grows during training, inspect node-local Ray/session state
-  before changing training semantics: `/tmp/ray`, `${LOCAL_RUNTIME_DIR}/ray`,
-  Ray object spilling, runtime-env cache, logs, and core files.
-- Treat `/tmp/ray` as scratch. The durable record is the run directory logs,
-  resolved configs, W&B, dumps, and checkpoints. Ray session logs are useful
-  during live debugging but should not be retained across launches unless a
-  specific failure investigation requires copying a small excerpt into the run
-  directory.
-- Fix the producer of excessive local writes. Do not route high-churn Ray temp,
-  object spilling, or service scratch to NAS as the first response; it can hide
-  the bug, slow training, and leave harder-to-clean shared-storage debris.
-- Durable checkpoints and run artifacts belong under `${ROOT_DIR}/runs` or
-  `${ROOT_DIR}/models`; transient Ray/service scratch does not.
-- Failed/debug runs should be cleaned after preserving minimal evidence. Formal
-  runs that are kept for comparison should have an explicit checkpoint-retention
-  policy recorded by the training repo.
-
-## Debugging Order
-
-1. Confirm node file and selected indexes.
+1. Confirm root, node file, selected indexes, and resolved SSH contract.
 2. Confirm env/data/source materialization on every selected node.
 3. Check service logs and train logs.
 4. Check GPU utilization and memory to distinguish rollout, actor, aux, and
    keepalive behavior.
-5. Check local disk pressure from Ray temp, object spilling, runtime-env cache,
-   logs, core files, and debug dumps.
+5. Check local disk pressure from Ray scratch, runtime caches, core files, and
+   debug dumps.
 6. Check resolved configs for stale values or shell pollution.
 7. Change code only after locating the owning layer.
