@@ -185,6 +185,11 @@ commit concrete cluster paths in training repo configs.
   variable or Python CLI flag that Slime parses later does not constrain an
   already-started Ray cluster. Leaving Ray at default `/tmp/ray` is acceptable
   when that directory is node-local, monitored, and cleaned between runs.
+- Launchers that reset Ray on selected training nodes should clean stale
+  `/tmp/ray/session_*` and `session_latest` after `ray stop --force` only when
+  no Ray daemon processes remain for the current user. Never blindly delete an
+  active Ray session or clean aux/foreign nodes outside the selected launch
+  contract.
 - After resource reset: update node file, materialize runtime/data, start
   watchdog/bench, then launch jobs.
 - Preserve the difference between an unset variable and an explicitly empty
@@ -231,6 +236,11 @@ commit concrete cluster paths in training repo configs.
 - When node disk grows during training, inspect node-local Ray/session state
   before changing training semantics: `/tmp/ray`, `${LOCAL_RUNTIME_DIR}/ray`,
   Ray object spilling, runtime-env cache, logs, and core files.
+- Treat `/tmp/ray` as scratch. The durable record is the run directory logs,
+  resolved configs, W&B, dumps, and checkpoints. Ray session logs are useful
+  during live debugging but should not be retained across launches unless a
+  specific failure investigation requires copying a small excerpt into the run
+  directory.
 - Fix the producer of excessive local writes. Do not route high-churn Ray temp,
   object spilling, or service scratch to NAS as the first response; it can hide
   the bug, slow training, and leave harder-to-clean shared-storage debris.
