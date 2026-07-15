@@ -25,8 +25,9 @@ adding compensating wrappers.
 
 ## Configuration Ownership
 
-- `configs/agent_env/runs/*.env`: choose env, env config, model profile, train
-  profile, topology profile, optional aux profile, and run naming.
+- `configs/agent_env/runs/*.env`: choose env, env config, reward profile,
+  model profile, train profile, topology profile, optional aux profile, and
+  run naming.
 - `configs/agent_env/models/*.env`: model identity, model args, loss-mask
   family, dropout/model compatibility defaults.
 - `configs/agent_env/train/*.env`: env-specific training baseline, algorithm,
@@ -36,9 +37,13 @@ adding compensating wrappers.
   only. Keep algorithm, model, batch, token, aux, and env semantics out.
 - `configs/agent_env/aux/*.env`: auxiliary endpoint identity and credentials
   only.
+- `configs/agent_env/rewards/*.yaml`: reward implementation, env-score scale,
+  format/truncation penalties, LLM-as-judge mode, and method-specific settings
+  such as ROPD. Do not mirror these settings in env configs or train profiles.
 - `configs/nodes/*.txt`: local IP files only; commit examples, not real IPs.
 - `examples/agent_env/<env>/env_config.yaml`: environment semantics, parser,
-  task/data settings, env server settings, and reward configuration.
+  task/data settings, and env server settings. Do not put reward composition
+  here.
 
 Train profile names should be:
 
@@ -99,8 +104,9 @@ Do not include model names or aux providers in train profile names.
   env data disagree, raise an error.
 - Generic rollout code owns message/token accounting, env HTTP lease lifecycle,
   sample shape, common dumping, infra discard, and Slime data contracts.
-- Reward implementations own final reward composition. Select them through
-  `env_config.yaml` under `reward.impl` and task-specific reward fields.
+- Reward implementations own final reward composition. Select them through the
+  run's `REWARD_PROFILE`, and keep reward semantics out of env config, train
+  profile, aux profile, launch scripts, and ambient shell variables.
 - Reward post-process should adapt already-computed RM rewards to Slime's reward
   tensor contract. It should not secretly append env, format, or truncation
   rewards unless that is the selected reward implementation.
