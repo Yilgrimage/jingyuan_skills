@@ -109,6 +109,35 @@ Do not include model names or aux providers in train profile names.
 - GLM-style padding is for infra-discard recovery: discard bad samples, then
   pad kept groups from valid samples. Never train on discarded samples as real
   data.
+- Do not lightweight formal eval. Smoke/debug eval may use small prompt subsets,
+  but any result used to judge training quality or compare runs must evaluate
+  the full official split(s), record the dataset size/hash, and log explicit
+  metrics such as `success_rate` and `env_reward_mean` rather than ambiguous
+  aggregate reward keys.
+- Checkpoint eval must use a path that actually loads the checkpoint weights.
+  Megatron dist checkpoints need the actor-load plus weight-sync eval path;
+  rollout-only eval is valid only for HF checkpoints already loadable by the
+  rollout engine.
+
+## Checkpoints And Artifacts
+
+- Every formal run must declare its checkpoint policy in the train profile or
+  explicit launch override: save interval, max retained checkpoints, and
+  whether optimizer/RNG state is saved.
+- Formal resumable training should save optimizer/RNG state. If a run is
+  intentionally weight-only, label it as eval-only or non-resumable in the run
+  name or notes.
+- Debug/smoke runs should disable checkpointing or cap retained checkpoints to
+  one or two. Do not let failed launch/debug attempts accumulate checkpoints.
+- For checkpoint-sweep experiments, keep all planned checkpoints only when
+  storage budget is confirmed. Use sparse intervals such as 25 or 50 steps, not
+  dense default saves.
+- Do not silently change checkpoint cadence or retention between comparable
+  runs. If a run resumes from checkpoint, record the source checkpoint and the
+  intended total training step target.
+- After a run is declared failed or superseded, remove its checkpoints after
+  preserving the minimal evidence needed for debugging: resolved configs, W&B
+  run id, selected logs, and any eval summary.
 
 ## Training Pitfalls
 
@@ -121,6 +150,8 @@ Do not include model names or aux providers in train profile names.
 - Align `GLOBAL_BATCH_SIZE`, `ROLLOUT_BATCH_SIZE * N_SAMPLES_PER_PROMPT`, and
   full-async in-flight capacity unless deliberately testing staleness.
 - Keep checkpointing sparse and capped during debugging.
+- Keep debug dumps bounded. A dump setting used to inspect one rollout bug
+  should not become a default for 100+ step training.
 - When comparing agentic RL papers or repos, distinguish true multi-turn env
   interaction from pseudo multi-turn single-step training. Avoid treating
   `verl-agent`/GiGPO-style pipelines as evidence for our setting when they

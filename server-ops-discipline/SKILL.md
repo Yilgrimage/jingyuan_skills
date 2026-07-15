@@ -51,6 +51,10 @@ watchdog, node materialization, SSH fanout, or root discovery.
   real shared-storage locations.
 - Disposable: extracted envs, source mirrors, data mirrors, Ray temp state, and
   service scratch live on node-local disks such as `/tmp`.
+- Ray session directories, object spilling, runtime-env caches, and service
+  temp files must use node-local scratch such as `${LOCAL_RUNTIME_DIR}`. Do not
+  place Ray temp or object spilling under `${ROOT_DIR}`, `${ROOT_DIR}/runs`, or
+  NAS-backed symlinks just to avoid local disk pressure.
 - Do not install packages during normal training startup. Build packs first,
   then materialize them onto nodes.
 - Keep generated outputs, real node IP files, secrets, packs, data, models,
@@ -165,6 +169,12 @@ commit concrete cluster paths in training repo configs.
   or a cluster-specific override, then propagate `NCCL_SOCKET_IFNAME`,
   `GLOO_SOCKET_IFNAME`, and `TP_SOCKET_IFNAME` into Ray actor runtime envs.
   Do not rely on outer-shell exports reaching Ray actors.
+- If a launcher chooses to override Ray's default `/tmp/ray`, it must do so at
+  Ray daemon startup: create a node-local `RAY_TEMP_DIR` on every selected node
+  and pass it to both head and worker `ray start --temp-dir`. A train adapter
+  variable or Python CLI flag that Slime parses later does not constrain an
+  already-started Ray cluster. Leaving Ray at default `/tmp/ray` is acceptable
+  when that directory is node-local, monitored, and cleaned between runs.
 - After resource reset: update node file, materialize runtime/data, start
   watchdog/bench, then launch jobs.
 - Preserve the difference between an unset variable and an explicitly empty
@@ -206,6 +216,20 @@ commit concrete cluster paths in training repo configs.
   unrelated tmux sessions or user processes.
 - Keep watchdog and bench independent of training framework state.
 
+## Local Disk Pressure
+
+- When node disk grows during training, inspect node-local Ray/session state
+  before changing training semantics: `/tmp/ray`, `${LOCAL_RUNTIME_DIR}/ray`,
+  Ray object spilling, runtime-env cache, logs, and core files.
+- Fix the producer of excessive local writes. Do not route high-churn Ray temp,
+  object spilling, or service scratch to NAS as the first response; it can hide
+  the bug, slow training, and leave harder-to-clean shared-storage debris.
+- Durable checkpoints and run artifacts belong under `${ROOT_DIR}/runs` or
+  `${ROOT_DIR}/models`; transient Ray/service scratch does not.
+- Failed/debug runs should be cleaned after preserving minimal evidence. Formal
+  runs that are kept for comparison should have an explicit checkpoint-retention
+  policy recorded by the training repo.
+
 ## Debugging Order
 
 1. Confirm node file and selected indexes.
@@ -213,5 +237,7 @@ commit concrete cluster paths in training repo configs.
 3. Check service logs and train logs.
 4. Check GPU utilization and memory to distinguish rollout, actor, aux, and
    keepalive behavior.
-5. Check resolved configs for stale values or shell pollution.
-6. Change code only after locating the owning layer.
+5. Check local disk pressure from Ray temp, object spilling, runtime-env cache,
+   logs, core files, and debug dumps.
+6. Check resolved configs for stale values or shell pollution.
+7. Change code only after locating the owning layer.
