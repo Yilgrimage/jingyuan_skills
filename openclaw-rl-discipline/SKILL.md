@@ -521,6 +521,29 @@ For strict verification set `ROPD_USE_LLM=1` and `ROPD_FALLBACK_HEURISTIC=0`.
 If the proxy or tunnel health check fails, stop before rollout; do not let the
 reward path fall back to heuristic scoring during a validation run.
 
+ROPD prompt data may either carry teacher traces directly or carry only query
+metadata plus a stable lookup key. Direct traces take precedence when fields
+such as `teacher_trace`, `teacher_full_trace_text`, `teacher_no_tool_trace`,
+or `trace_no_tool_text` are present. Query-only data should set
+`ROPD_TEACHER_INDEX_PATH` or `ROPD_EXTERNAL_TEACHER_INDEX_PATH` to a durable NAS
+JSON/JSONL index keyed by `sample_id`, `source_sample_id`, `rollout_key`, or
+explicit `teacher_*_key` fields. The reward function should load this index
+with mtime/size caching at reward time; do not append large teacher traces to
+prompt data only to satisfy ROPD.
+
+Teacher rows with `status != completed`, including `overlength`, must not be
+silently scored as ROPD references. They should log a warning and fall back to
+the configured MLF-dev reward path, with fallback metadata recorded in the
+reward dict. This is a data availability fallback, not a heuristic fallback.
+
+Teacher rollout exporters should distinguish terminal statuses:
+
+- `completed`: usable teacher trace.
+- `overlength`: non-failed terminal row whose trace exceeds the configured
+  token limit, for example `CODEX_ROLLOUT_OVERLENGTH_TOKEN_LIMIT=512000`.
+- `failed`: adapter/runtime/provider failure that should go to the error file
+  and may be retried.
+
 For GRPO/ROPD validation runs that need group-relative advantages, keep reward
 normalization enabled unless the experiment explicitly disables it. Ensure the
 launcher passes `DISABLE_REWARDS_NORMALIZATION=0` through its environment
