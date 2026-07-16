@@ -98,6 +98,10 @@ header. A per-session `skills` entry should be a single symlink to
 `CODEX_HOME/skills` when Skill docs or examples use workspace-relative
 `./skills/...` paths; never copy the skills tree per conversation. The
 per-session workspace should otherwise hold task scratch files only.
+Use `scripts/derive_codex_training_workspace.sh` to derive the training
+workspace from the online runtime mirror: it preserves online skill behavior,
+rewrites only portable persona paths, and injects the training-only MCP QPS
+overlay from `scripts/runtime_overlays/`.
 
 Use Codex's official provider/config interface for local policy models. The
 adapter should write an isolated `config.toml` with `model_provider`,
