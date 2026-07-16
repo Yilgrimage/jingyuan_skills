@@ -531,6 +531,14 @@ explicit `teacher_*_key` fields. The reward function should load this index
 with mtime/size caching at reward time; do not append large teacher traces to
 prompt data only to satisfy ROPD.
 
+For Codex teacher export, point training at the slim `teacher_index.jsonl`
+emitted by `mlf/backends/codex/export_direct_rollouts.py`, not the full
+`gpt_rollouts.jsonl` audit file. The slim index should carry `status`,
+stable keys, final answer, and `trace_no_tool_text` for completed rows.
+`gpt_rollouts.jsonl` remains the lossless audit artifact. Since training may
+read the index while rollout is appending, readers must tolerate an incomplete
+trailing JSONL row and retry on the next mtime/size change.
+
 Teacher rows with `status != completed`, including `overlength`, must not be
 silently scored as ROPD references. They should log a warning and fall back to
 the configured MLF-dev reward path, with fallback metadata recorded in the
