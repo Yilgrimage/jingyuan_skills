@@ -28,7 +28,7 @@ Supported backends:
   openclaw   -> openclaw-rl-openclaw-runtime.tar.gz
   hermes     -> openclaw-rl-hermes-runtime.tar.gz
   deerflow   -> openclaw-rl-deerflow-runtime.tar.gz
-  codex      -> delegates to materialize_codex_runtime.sh
+  codex      -> delegates to materialize_codex_eu_online_runtime.sh
 
 Options:
   --backend NAME        openclaw|hermes|deerflow|codex
@@ -72,7 +72,7 @@ case "${BACKEND}" in
     ENV_NAME="DEERFLOW_BACKEND_RUNTIME_ENV"
     ;;
   codex)
-    cmd=("${SCRIPT_DIR}/materialize_codex_runtime.sh" --pack-dir "${PACK_DIR}")
+    cmd=("${SCRIPT_DIR}/materialize_codex_eu_online_runtime.sh" --pack-dir "${PACK_DIR}")
     if [ -n "${PACK}" ]; then
       cmd+=(--pack "${PACK}")
     fi

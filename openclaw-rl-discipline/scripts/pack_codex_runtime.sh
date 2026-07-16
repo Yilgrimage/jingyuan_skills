@@ -38,6 +38,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ "${ALLOW_LEGACY_CODEX_RUNTIME:-0}" != "1" ]; then
+  echo "Refusing to pack legacy standalone Codex runtime." >&2
+  echo "Use pack_codex_eu_online_runtime.sh for business Codex rollouts." >&2
+  echo "Set ALLOW_LEGACY_CODEX_RUNTIME=1 only for isolated debug experiments." >&2
+  exit 1
+fi
+
 if [ -z "${SOURCE_DIR}" ]; then
   if [ -z "${CODEX_BIN}" ]; then
     echo "Missing codex binary. Pass --source or --codex-bin." >&2

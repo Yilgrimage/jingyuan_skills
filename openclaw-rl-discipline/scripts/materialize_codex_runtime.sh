@@ -19,6 +19,10 @@ usage() {
   cat <<'EOF'
 Usage: materialize_codex_runtime.sh [options]
 
+LEGACY DEBUG-ONLY SCRIPT. For business Codex/OpenClaw-RL rollouts use
+materialize_codex_eu_online_runtime.sh. This standalone runtime does not match
+the online Codex-EU service and uses the old 2% skills metadata budget.
+
 Restore the Codex standalone CLI runtime onto node-local storage and write a
 small env file. This does not create or modify CODEX_HOME.
 
@@ -41,6 +45,13 @@ while [ $# -gt 0 ]; do
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
+
+if [ "${ALLOW_LEGACY_CODEX_RUNTIME:-0}" != "1" ]; then
+  echo "Refusing to materialize legacy standalone Codex runtime." >&2
+  echo "Use materialize_codex_eu_online_runtime.sh for business Codex rollouts." >&2
+  echo "Set ALLOW_LEGACY_CODEX_RUNTIME=1 only for isolated debug experiments." >&2
+  exit 1
+fi
 
 if [ -z "${PACK}" ]; then
   PACK="$(ls -t "${PACK_DIR}"/codex-runtime-*.tar.gz 2>/dev/null | head -1 || true)"

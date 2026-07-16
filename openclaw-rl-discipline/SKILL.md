@@ -77,6 +77,28 @@ For `HARNESS_BACKEND=codex`, Codex-specific code should stay in the
 Codex adapter: isolated `CODEX_HOME`, Codex CLI invocation, and any protocol
 translation needed to reach the policy proxy.
 
+Use the online Codex-EU runtime for business Codex rollouts. The standalone
+Codex CLI pack (`codex-runtime-*.tar.gz`, for example 0.142.3) is a legacy
+debug runtime and does not match the online service; it still uses the old
+2% skills metadata budget. The Codex-EU binary packed by
+`pack_codex_eu_online_runtime.sh` / materialized by
+`materialize_codex_eu_online_runtime.sh` uses the online 10% skills metadata
+budget. With a 256k local model this can still shorten skill descriptions when
+many business skills are enabled; with the online 1M context it may not. Treat
+any rollout that reports a `2% skills context budget` warning as using the
+wrong Codex binary.
+
+Align Codex persona and skills with the online Codex-EU layout. Persona
+instructions belong in `CODEX_HOME/AGENTS.md` as user-level instructions.
+Business skills belong under `CODEX_HOME/skills` or the equivalent
+Codex-configured skills root. Do not copy or symlink persona `AGENTS.md` into
+each per-session `-C` workspace. Workspace `AGENTS.md` is treated as project
+documentation, is subject to `project_doc_max_bytes`, and adds a cwd-specific
+header. A per-session `skills` entry should be a single symlink to
+`CODEX_HOME/skills` when Skill docs or examples use workspace-relative
+`./skills/...` paths; never copy the skills tree per conversation. The
+per-session workspace should otherwise hold task scratch files only.
+
 Use Codex's official provider/config interface for local policy models. The
 adapter should write an isolated `config.toml` with `model_provider`,
 `[model_providers.<id>]`, `base_url`, `wire_api`, `model_context_window`,
@@ -274,6 +296,41 @@ the emitted `mcp_runtime.env`; it provides `HARNESS_AGENT_ENV_FILE`,
 `HARNESS_AGENT_PYTHON_BIN_DIR`, `HARNESS_AGENT_NODE_BIN_DIR`, `MCP_PYTHON`,
 `AGENT_MCP_PYTHON_BIN_DIR`, and `AGENT_MCP_NODE_BIN_DIR`.
 
+For the current Codex-EU training/eval reproduction on ecomcommonnas, treat
+the online-maintained syx Python as the source runtime, but do not run it
+directly from NAS for training. Build a node-local MCP pack from it:
+
+```bash
+ROOT_DIR=/mnt/bn/ecomcommonnas/yanjingyuan \
+bash scripts/pack_syx_mcp_runtime.sh --rsync-staging --force
+```
+
+Then materialize that pack on each node with `materialize_mcp_runtime.sh` and
+source the emitted `mcp_runtime.env` before launching Codex/OpenClaw-RL. The
+lightweight `write_codex_syx_mcp_env.sh` direct-syx path is only for diagnosis
+or short parity smokes; formal rollout/training should use the local
+`agent-mcp-syx-py310` pack to avoid NAS small-file import and `npx` latency.
+The Codex-EU wrapper must respect an already-set `CODEX_HOME` from the
+adapter; it may provide a default home for manual use, but must not overwrite
+per-session homes during rollout.
+
+For Codex/OpenClaw-RL training parity, the Codex child process may inherit the
+backend runtime env, including credentials loaded from
+`HARNESS_AGENT_ENV_FILE`. This matches the real shell/tool environment that
+business skills expect, but it means weak student models can expose cookies or
+tokens by running commands such as `env | grep TOKEN`. Treat that as model
+behavior to evaluate/train against unless the experiment explicitly requests a
+secret-minimized harness.
+
+The adapter-generated `CODEX_HOME/config.toml` must still explicitly set the
+MCP runtime PATH through `shell_environment_policy.set.PATH`, plus runtime
+variables such as `MCP_PYTHON`, `AGENT_MCP_*`, `HARNESS_AGENT_*`,
+`MCP_TOOL_CALL_PY`, and MCP QPS settings. Otherwise model-generated commands
+like `python3 ./skills/mcp_tools_usage/scripts/mcp_tool_call.py ...` can
+silently use `/usr/bin/python3` and import stale or missing MCP packages. This
+is an adapter/runtime configuration issue, not model behavior and not a reason
+to patch Skill wrappers or prompts.
+
 MCP runtime validation must cover the exact paths the agent can execute, not
 only `MCP_PYTHON`. Some business Skill docs call `python3` or a compatibility
 path such as `/Users/bytedance/miniconda3/bin/python`. After materialization,
@@ -283,7 +340,7 @@ tool child processes so stale packages under `/home/*/.local` cannot shadow the
 MCP runtime and cause errors such as `bytedenv` missing
 `get_current_vregion`.
 
-The shared `mcp_tools_usage/scripts/mcp_tool_call.py` runner must also resolve
+The shared `mcp_tools_usage/scripts/mcp_tool_call.py` runner must resolve
 stdio MCP executables from the materialized runtime env. In particular, it
 should prepend `AGENT_MCP_NODE_BIN_DIR` / `HARNESS_AGENT_NODE_BIN_DIR` and
 `AGENT_MCP_PYTHON_BIN_DIR` / `HARNESS_AGENT_PYTHON_BIN_DIR` to the child env
@@ -332,22 +389,37 @@ a PSM are not model behavior.
 
 When restoring a new node, materialize the split packs before launching Codex
 or OpenClaw runs: backend runtime, `agent-business-skills`, `agent-persona`,
-and an MCP runtime pack compatible with the node image, for example
-`mcp-runtime-py311-agent-mcp-bookworm` on Debian 12/B200 or
-`mcp-runtime-py312-agent-mcp` on newer Ubuntu images. Generic packs are not
-necessarily conda envs. The server-ops materializer should unpack and stamp
-them without assuming `bin/conda-unpack` exists. Verify `codex --version`, the
-materialized skill count, MCP Python/Node paths, and the selected persona before
-the first rollout.
+and an MCP runtime pack compatible with the node image. For the Codex-EU
+business skill route, the current pack is
+`mcp-runtime-syx-py310-agent-mcp-syx-py310.tar.gz`, restored as
+`agent-mcp-syx-py310`. Generic packs are not necessarily conda envs. The
+server-ops materializer should unpack and stamp them without assuming
+`bin/conda-unpack` exists. Verify `codex --version`, the materialized skill
+count, MCP Python/Node paths, and the selected persona before the first rollout.
 
-When limiting MCP pressure during rollout, set `MCP_GLOBAL_QPS` or
-`MCP_RATE_LIMIT_QPS` for the backend child-process environment. The shared
-`mcp_tools_usage/scripts/mcp_tool_call.py` runner enforces this per node through
-a node-local file lock under `${MCP_RATE_LIMIT_DIR:-/tmp/server-ops-runtime/mcp/rate_limit}`.
+When limiting MCP pressure during rollout, use the training-only overlay in the
+shared `mcp_tools_usage/scripts/mcp_tool_call.py` runner. It supports two
+independent layers:
+
+- `MCP_GLOBAL_QPS` or `MCP_RATE_LIMIT_QPS`: one node-local global queue for all
+  calls through the runner.
+- `MCP_TOOL_QPS_DEFAULT`, `MCP_TOOL_QPS`, or `MCP_TOOL_QPS_CONFIG`: per
+  `PSM/tool` queues. Matching priority is exact `psm/tool_name`, then
+  `psm/*`, then `MCP_TOOL_QPS_DEFAULT`. `MCP_TOOL_QPS` accepts either a JSON
+  object or comma form such as
+  `bytedance.mcp.thunder_server/*=1,bytedance.mcp.gne_agent_tool/7643377269293154578=1`.
+
+During exploratory rollout, a practical starting point is
+`MCP_TOOL_QPS_DEFAULT=1` with the global cap disabled or set separately. This
+keeps each concrete MCP tool from spiking while preserving enough throughput to
+observe real bottlenecks. The lock state lives under
+`${MCP_RATE_LIMIT_DIR:-/tmp/server-ops-runtime/mcp/rate_limit}`.
+
 This protects calls that go through the shared runner, including Thunder,
 Machine IPR, and GNE wrappers that resolve `MCP_TOOL_CALL_PY`; it does not
 throttle arbitrary direct `curl`, direct SDK, browser, Lark, or web-search
-traffic.
+traffic. If a skill bypasses `mcp_tool_call.py`, fix the skill/runtime route or
+account for it separately before scaling rollout.
 
 For live observability, the runner always emits best-effort UDP metrics to
 `${MCP_METRICS_UDP_HOST:-127.0.0.1}:${MCP_METRICS_UDP_PORT:-18091}` when QPS
@@ -365,9 +437,10 @@ python "$HARNESS_AGENT_SKILL_DIRS/mcp_tools_usage/scripts/mcp_rate_limit_metrics
 
 Then read `http://127.0.0.1:${MCP_METRICS_PORT:-18090}/metrics`. The `windows`
 section reports rate-limiter queue wait only; it does not measure MCP service
-latency. Use `call_windows` for real MCP call duration, transport split, and
-stdio/psm errors. The runner does not open a TCP port by itself. File-based
-metrics under `MCP_RATE_LIMIT_DIR` are disabled by default; set
+latency. Use `by_scope` and `by_limit_key` to see whether waiting is caused by
+the global queue or a specific `PSM/tool` queue. Use `call_windows` for real MCP
+call duration, transport split, and MCP errors. The runner does not open a TCP
+port by itself. File-based metrics under `MCP_RATE_LIMIT_DIR` are disabled by default; set
 `MCP_RATE_LIMIT_FILE_METRICS=1` only for explicit debug fallback. Live
 monitoring should use the UDP in-memory server.
 
@@ -471,3 +544,8 @@ For a smoke rollout, inspect:
 
 If the effective prompt or tool surface does not match the target harness, stop
 and mark the data invalid before scaling the run.
+
+For Codex teacher/student data export, keep the raw event stream lossless by
+default. Tail-truncated stdout/stderr summaries are acceptable for quick
+inspection, but `raw.events` or an equivalent sidecar must contain the full
+event sequence unless the run is explicitly labeled as a debug export.
