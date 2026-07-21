@@ -124,6 +124,11 @@ Do not include model names or aux providers in train profile names.
   Megatron dist checkpoints need the actor-load plus weight-sync eval path;
   rollout-only eval is valid only for HF checkpoints already loadable by the
   rollout engine.
+- Checkpoint sweeps must use the native eval launch path directly. Do not write
+  run-local wrapper scripts or duplicate eval loops after native eval exists.
+  Assign one checkpoint per node by overriding `NODE_INDICES`, `RUN_ROOT`,
+  `LOAD_DIR`, and `EVAL_*` launch variables in the command line, then parse
+  metrics from the native train log, for example the `eval 0:` line.
 
 ## Checkpoints And Artifacts
 
