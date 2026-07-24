@@ -17,6 +17,10 @@ node-local disks are disposable caches rebuilt from packs and scripts.
 - Disposable state lives on node-local storage: extracted envs, copied data,
   model/source caches, Ray scratch, runtime-env caches, service scratch, and
   core/temp files.
+- Treat the development/control host as a jump box. It may orchestrate jobs and
+  prepare lightweight JSONL metadata, but must not materialize task envs/data or
+  run env-dependent rollout/eval loops. Start env servers and offline teacher
+  collection on worker/GPU nodes using node-local runtimes.
 - If a cluster has separate quotas, keep public names stable and use symlinks
   such as `${ROOT_DIR}/models` or `${ROOT_DIR}/runs` behind the scenes. Do not
   add cluster-specific artifact roots to training repos.
