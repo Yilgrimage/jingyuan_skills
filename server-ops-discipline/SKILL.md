@@ -169,3 +169,15 @@ A100 jixf-nas-lq:  ROOT_DIR=/mnt/bn/jixf-nas-lq/mlf, SSH_PORT=10413,
    debug dumps.
 6. Check resolved configs for stale values or shell pollution.
 7. Change code only after locating the owning layer.
+
+## Eval Records
+
+- Keep a small eval index under `${ROOT_DIR}/runs/eval_summaries`.
+- Copy TSV/JSON summary files into `eval_summaries/<env>/summaries/` and add
+  raw symlinks under `eval_summaries/<env>/raw_links/`.
+- Update `eval_summaries/index.tsv` for every result used in discussion,
+  cleanup, or follow-up experiments. Include whether it is full eval, dev-only,
+  smoke, token probe, or train-metric-only.
+- Do not rely on chat history or W&B alone for remembered eval outcomes.
+- Before deleting checkpoints, verify the corresponding eval summary is indexed.
+  If no eval was run, record that explicitly in the cleanup manifest.

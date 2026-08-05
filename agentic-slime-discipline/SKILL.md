@@ -120,6 +120,10 @@ Do not include model names or aux providers in train profile names.
   the full official split(s), record the dataset size/hash, and log explicit
   metrics such as `success_rate` and `env_reward_mean` rather than ambiguous
   aggregate reward keys.
+- Preserve eval outcomes in `${ROOT_DIR}/runs/eval_summaries`: copy compact
+  TSV/JSON summaries into `<env>/summaries/`, link raw run/eval directories from
+  `<env>/raw_links/`, and add an `index.tsv` row. Label dev-only and smoke evals
+  explicitly so they are not confused with full official eval.
 - Checkpoint eval must use a path that actually loads the checkpoint weights.
   Megatron dist checkpoints need the actor-load plus weight-sync eval path;
   rollout-only eval is valid only for HF checkpoints already loadable by the
@@ -148,7 +152,8 @@ Do not include model names or aux providers in train profile names.
   intended total training step target.
 - After a run is declared failed or superseded, remove its checkpoints after
   preserving the minimal evidence needed for debugging: resolved configs, W&B
-  run id, selected logs, and any eval summary.
+  run id, selected logs, cleanup manifest, and any eval summary. If no eval was
+  run, state that explicitly before deleting checkpoints.
 
 ## Training Pitfalls
 
