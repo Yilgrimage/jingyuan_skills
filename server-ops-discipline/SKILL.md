@@ -17,6 +17,10 @@ node-local disks are disposable caches rebuilt from packs and scripts.
 - Disposable state lives on node-local storage: extracted envs, copied data,
   model/source caches, Ray scratch, runtime-env caches, service scratch, and
   core/temp files.
+- Treat the development/control host as a jump box. It may orchestrate jobs and
+  prepare lightweight JSONL metadata, but must not materialize task envs/data or
+  run env-dependent rollout/eval loops. Start env servers and offline teacher
+  collection on worker/GPU nodes using node-local runtimes.
 - If a cluster has separate quotas, keep public names stable and use symlinks
   such as `${ROOT_DIR}/models` or `${ROOT_DIR}/runs` behind the scenes. Do not
   add cluster-specific artifact roots to training repos.
@@ -178,3 +182,15 @@ A100 jixf-nas-lq:  ROOT_DIR=/mnt/bn/jixf-nas-lq/mlf, SSH_PORT=10413,
    debug dumps.
 6. Check resolved configs for stale values or shell pollution.
 7. Change code only after locating the owning layer.
+
+## Eval Records
+
+- Keep a small eval index under `${ROOT_DIR}/runs/eval_summaries`.
+- Copy TSV/JSON summary files into `eval_summaries/<env>/summaries/` and add
+  raw symlinks under `eval_summaries/<env>/raw_links/`.
+- Update `eval_summaries/index.tsv` for every result used in discussion,
+  cleanup, or follow-up experiments. Include whether it is full eval, dev-only,
+  smoke, token probe, or train-metric-only.
+- Do not rely on chat history or W&B alone for remembered eval outcomes.
+- Before deleting checkpoints, verify the corresponding eval summary is indexed.
+  If no eval was run, record that explicitly in the cleanup manifest.
