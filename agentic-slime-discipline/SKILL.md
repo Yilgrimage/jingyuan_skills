@@ -55,6 +55,10 @@ Do not include model names or aux providers in train profile names.
 
 ## Runtime Contract
 
+- Runtime/data pack creation, verification, backup, and provider-neutral
+  cold-start restore are owned by server ops. Follow
+  `../server-ops-discipline/references/runtime_pack_build.md`; training launch
+  code must never become a second package installer or downloader.
 - Support image and conda-pack Slime runtimes through
   `scripts/utils/slime_runtime.sh`.
 - Treat Megatron-LM as part of the Slime training runtime, not as a separate
@@ -110,6 +114,18 @@ Do not include model names or aux providers in train profile names.
 - Reward post-process should adapt already-computed RM rewards to Slime's reward
   tensor contract. It should not secretly append env, format, or truncation
   rewards unless that is the selected reward implementation.
+- When comparing reward methods such as env reward, 0-1 success reward, ROPD,
+  or LUFFY variants, use the environment metrics (`<env>/success_rate` and
+  `<env>/env_reward_mean`) as the primary task-performance axis. ROPD or judge
+  `rollout/raw_reward` is a reward-quality/debug signal and is not directly
+  comparable to env reward scales.
+- Route agent-env W&B metrics through the common metrics logger and bind every
+  emitted key to `rollout/step` or `eval/step`; one-level namespace globs do
+  not cover nested or environment-specific metric names.
+- Do not change the historical meaning of `<env>/env_reward_mean` mid-project.
+  If a reward profile scales or binarizes the environment score and raw partial
+  credit is also needed, add/use `<env>/env_score_mean` from metadata
+  `env_score` instead of repurposing `env_reward_mean`.
 - Dynamic sampling drops zero-variance reward groups after RM reward computation.
   It does not resample individual samples.
 - GLM-style padding is for infra-discard recovery: discard bad samples, then
@@ -124,15 +140,30 @@ Do not include model names or aux providers in train profile names.
   TSV/JSON summaries into `<env>/summaries/`, link raw run/eval directories from
   `<env>/raw_links/`, and add an `index.tsv` row. Label dev-only and smoke evals
   explicitly so they are not confused with full official eval.
+- Before using remembered AppWorld numbers, read
+  `../server-ops-discipline/references/appworld_eval_results.md`. It records the
+  portable accepted protocol, checkpoint ancestry, formal results, and known
+  invalid historical evaluations without requiring the original NAS.
 - Checkpoint eval must use a path that actually loads the checkpoint weights.
   Megatron dist checkpoints need the actor-load plus weight-sync eval path;
   rollout-only eval is valid only for HF checkpoints already loadable by the
   rollout engine.
 - Checkpoint sweeps must use the native eval launch path directly. Do not write
   run-local wrapper scripts or duplicate eval loops after native eval exists.
-  Assign one checkpoint per node by overriding `NODE_INDICES`, `RUN_ROOT`,
-  `LOAD_DIR`, and `EVAL_*` launch variables in the command line, then parse
-  metrics from the native train log, for example the `eval 0:` line.
+  Assign one checkpoint per node by overriding `NODE_INDICES`, `RUN_ROOT`, and
+  `LOAD_DIR`, then parse metrics from the native train log, for example the
+  `eval 0:` line.
+- `examples/agent_env/<env>/eval_config.yaml` (or one explicitly selected
+  `EVAL_CONFIG`) is the sole owner of native-eval datasets and sampling. The
+  launcher may select checkpoints, nodes, and splits, but must not inject
+  `EVAL_PROMPT_DATA`, temperature, response length, top-p, or top-k overrides.
+  Fail on these legacy duplicate sources instead of silently changing the eval
+  protocol.
+- Train and native eval must share the same single policy-turn request
+  lifecycle. Do not retry `/generate` inside an env episode: an inner retry can
+  outlive the env request timeout and create orphaned policy sessions. If eval
+  retry is required, retry a failed whole task with a fresh episode/session and
+  report the initial failure separately.
 
 ## Checkpoints And Artifacts
 
@@ -154,6 +185,36 @@ Do not include model names or aux providers in train profile names.
   preserving the minimal evidence needed for debugging: resolved configs, W&B
   run id, selected logs, cleanup manifest, and any eval summary. If no eval was
   run, state that explicitly before deleting checkpoints.
+
+## Credit Assignment Experiments
+
+- Reward profiles are the sole owner of credit-assignment semantics. Run
+  profiles may choose a reward profile and own group size, lifecycle, and
+  bounded dump cadence, but must not duplicate TASA/ROPD/LUFFY parameters.
+- All teacher and student judge inputs must pass through the shared structured
+  trace renderer. Environment-specific cleanup belongs in the env adapter;
+  generic ROPD/TASA code must not reconstruct traces from legacy text fields or
+  add fallback renderers.
+- Full TASA-GAE uses strict leave-one-out student evidence and
+  coverage-adaptive teacher fill. With peer budget `B`, reached peers `N`, and
+  peer outcome mean `V_MC`, use
+  `V=(1-N/B)*V_teacher+(N/B)*V_MC`. Derive `B` from actual on-policy students,
+  excluding LUFFY teacher samples.
+- Keep group semantics explicit in comparable runs. The canonical pure and
+  student-MC profiles use 16 on-policy students (`B=15`); LUFFY
+  `replace_anchor` uses 15 students plus one teacher (`B=14`). Compare methods
+  only against baselines with the same student count and LUFFY insertion mode.
+- Full TASA has a teacher prior at every valid state and does not use the hard
+  peer-support gate. The no-teacher/student-MC ablation keeps
+  `tasa_min_peer_support` and ignores under-supported states as value anchors.
+- A formal TASA run must retain bounded judge and credit dumps and emit the
+  `reward/tasa/*` namespace. Before trusting a curve, audit strict LOO peer
+  histograms excluding ROOT, state reuse by milestone depth, prerequisite
+  validity, non-terminal set/unset precision, terminal advantage sign, and
+  response-token segment alignment.
+- Treat new credit estimators as experimental until one-step dump checks and a
+  formal train/eval comparison both pass. Unit tests prove data contracts and
+  arithmetic, not judge quality or task performance.
 
 ## Training Pitfalls
 

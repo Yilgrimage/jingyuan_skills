@@ -55,6 +55,9 @@ chmod +x "${ROOT_DIR}/scripts/"*.sh
 Stable entrypoints:
 
 ```text
+bootstrap_micromamba.sh
+build_runtime_packs.sh --runtime slime,alfworld,appworld,tau2,webshop,wandb
+verify_pack_bundle.sh --runtime ...
 run_bench.sh start|stop|status|restart [--nodes nodes.txt --node 0,1]
 gpu_idle_watchdog.sh start|stop|status|restart
 prepare_data.sh --data <env>
@@ -69,6 +72,10 @@ node materialization, SSH fanout, or root discovery logic.
 
 ## Packs And Data
 
+- Before rebuilding or handing packs to a new cluster, read
+  `references/runtime_pack_build.md`. It is the provider-neutral cold-start,
+  verification, backup, and restore contract; no historical pack or specific
+  NAS mount is a prerequisite.
 - Prefer a complete training image when available. Otherwise use one complete
   conda pack per foundation stack. A Slime pack must include Slime, training
   dependencies, and bundled Megatron source at `src/Megatron-LM`.
@@ -86,6 +93,10 @@ node materialization, SSH fanout, or root discovery logic.
   it.
 - Do not run Python directly from NAS env directories. Use node-local extracted
   packs to avoid slow small-file IO and stale absolute prefixes.
+- A newly published runtime/data pack is complete only with its tarball,
+  portable checksum, revision, and manifest. Back up all four files to any
+  available durable cloud/shared storage after verification. Source rebuild is
+  the recovery path, not a substitute for preserving an exact working bundle.
 
 ## Nodes And SSH
 
@@ -138,6 +149,17 @@ A100 jixf-nas-lq:  ROOT_DIR=/mnt/bn/jixf-nas-lq/mlf, SSH_PORT=10413,
   GPU memory/utilization, `tmux ls`, and targeted `pgrep` patterns for train,
   Ray, SGLang, env/router, and bench. Do not rely on a single SSH command that
   may have been killed by process cleanup.
+- To stop a distributed run, first read its `resolved_launch.env`, then target
+  only its selected nodes and named train/Ray/env/router sessions. Request a
+  normal train exit before stopping that run's Ray daemons. Do not stop the GPU
+  watchdog. After cleanup, verify the run status file, confirm no owned
+  processes remain, and start bench immediately rather than waiting for the
+  watchdog idle window.
+- Before handing a run to another operator or cluster, push the exact code
+  commit, preserve resolved configs and bounded debug evidence, record the last
+  complete checkpoint, and state which algorithm changes were not exercised by
+  that run. A live process that imported an older checkout is not evidence for
+  a later commit even when both used the same shared path.
 
 ## Ray And Local Scratch
 
@@ -186,6 +208,9 @@ A100 jixf-nas-lq:  ROOT_DIR=/mnt/bn/jixf-nas-lq/mlf, SSH_PORT=10413,
 ## Eval Records
 
 - Keep a small eval index under `${ROOT_DIR}/runs/eval_summaries`.
+- For AppWorld, read `references/appworld_eval_results.md` before comparing,
+  deleting, or handing off experiments. It is the portable accepted-results
+  ledger when the original NAS is unavailable.
 - Copy TSV/JSON summary files into `eval_summaries/<env>/summaries/` and add
   raw symlinks under `eval_summaries/<env>/raw_links/`.
 - Update `eval_summaries/index.tsv` for every result used in discussion,
@@ -194,3 +219,6 @@ A100 jixf-nas-lq:  ROOT_DIR=/mnt/bn/jixf-nas-lq/mlf, SSH_PORT=10413,
 - Do not rely on chat history or W&B alone for remembered eval outcomes.
 - Before deleting checkpoints, verify the corresponding eval summary is indexed.
   If no eval was run, record that explicitly in the cleanup manifest.
+- Before releasing a cluster or trail, copy the compact accepted metrics,
+  protocol, checkpoint ancestry, and validity caveats into a tracked skill
+  reference. Raw symlinks and run-local files are not a portable handoff.
